@@ -1,0 +1,243 @@
+//! The terminal backend: a quick look in the REPL. Lines and markers
+//! become Unicode braille dots (2 x 4 per character cell), filled
+//! shapes dense or sparse dots by their opacity, images shade
+//! characters (or half blocks in colour), and text lands on the
+//! character grid. Colours are 24-bit ANSI escapes when asked for.
+
+use pkg::Color;
+use pkg::path::Flat;
+use pkg::scene::Scene;
+use pkg::text;
+
+/// Width of a character cell in layout px.
+pub(pkg) const CELL_W: f64 = 8.0;
+/// Height of a character cell in layout px.
+pub(pkg) const CELL_H: f64 = 16.0;
+
+const ESC: str = "\u{1b}";
+const SHADES: [char; 5] = [' ', '\u{2591}', '\u{2592}', '\u{2593}', '\u{2588}'];
+
+struct Grid {
+    cols: usize;
+    rows: usize;
+    dots: List<u8>;
+    ink: List<Color>;
+    chars: List<char>;
+    fg: List<Color>;
+    bg: List<Color>;
+}
+
+impl Grid {
+    fn dot(self, x: i64, y: i64, c: Color) {
+        if x < 0 || y < 0 { return; }
+        let (cx, cy) = ((x / 2) as usize, (y / 4) as usize);
+        if cx >= self.cols || cy >= self.rows { return; }
+        let bit = match (x % 2, y % 4) {
+            (0, 0) => 0x01u8, (0, 1) => 0x02u8, (0, 2) => 0x04u8, (0, 3) => 0x40u8,
+            (1, 0) => 0x08u8, (1, 1) => 0x10u8, (1, 2) => 0x20u8, _ => 0x80u8,
+        };
+        let i = cy * self.cols + cx;
+        self.dots[i] = self.dots[i] | bit;
+        self.ink[i] = c;
+    }
+
+    fn put(self, col: i64, row: i64, ch: char, c: Color) {
+        if col < 0 || row < 0 || col as usize >= self.cols || row as usize >= self.rows { return; }
+        let i = (row as usize) * self.cols + col as usize;
+        self.chars[i] = ch;
+        self.fg[i] = c;
+    }
+}
+
+/// The scene as `rows` lines of `cols` characters.
+pub(pkg) fn render(s: Scene, cols: usize, rows: usize, color: bool) -> str {
+    let n = cols * rows;
+    let g = Grid {
+        cols,
+        rows,
+        dots: List::filled(n, 0u8),
+        ink: List::filled(n, Color::clear()),
+        chars: List::filled(n, '\0'),
+        fg: List::filled(n, Color::clear()),
+        bg: List::filled(n, Color::clear()),
+    };
+    let kx = 2.0 / CELL_W;
+    let ky = 4.0 / CELL_H;
+    for it in s.items {
+        match it {
+            Line { path, stroke, .. } => {
+                if stroke.color.a == 0 { continue; }
+                let f = path.flatten(1.0);
+                strokes(g, f, kx, ky, stroke.color);
+            }
+            Fill { path, color: c, .. } => {
+                if c.a == 0 { continue; }
+                fill(g, path.flatten(1.0), kx, ky, c);
+            }
+            Markers { xs, ys, fills, .. } => {
+                for i in 0..xs.len().min(ys.len()) {
+                    let c = if fills.len() == 1 { fills[0] } else if i < fills.len() { fills[i] } else { fills[0] };
+                    if xs[i] == xs[i] && ys[i] == ys[i] { g.dot((xs[i] * kx).floor() as i64, (ys[i] * ky).floor() as i64, c); }
+                }
+            }
+            Image { x, y, w, h, cols: ic, rows: ir, rgba, .. } => {
+                let c0 = (x / CELL_W).round() as i64;
+                let c1 = ((x + w) / CELL_W).round() as i64;
+                let r0 = (y / CELL_H).round() as i64;
+                let r1 = ((y + h) / CELL_H).round() as i64;
+                for r in r0..r1 {
+                    for c in c0..c1 {
+                        let top = sample(rgba, ic, ir, x, y, w, h, ((c as f64) + 0.5) * CELL_W, ((r as f64) + 0.25) * CELL_H);
+                        let bot = sample(rgba, ic, ir, x, y, w, h, ((c as f64) + 0.5) * CELL_W, ((r as f64) + 0.75) * CELL_H);
+                        if c < 0 || r < 0 || c as usize >= cols || r as usize >= rows { continue; }
+                        let i = (r as usize) * cols + c as usize;
+                        if color {
+                            g.chars[i] = '\u{2580}';
+                            g.fg[i] = top;
+                            g.bg[i] = bot;
+                        } else {
+                            let l = (top.luminance() + bot.luminance()) / 2.0;
+                            g.chars[i] = SHADES[((l * 4.0).round() as usize).min(4)];
+                            g.fg[i] = Color::clear();
+                        }
+                    }
+                }
+            }
+            Text { x, y, runs, color: c, anchor, rotate, .. } => {
+                let t = text::plain(runs);
+                let chars: List<char> = t.chars().collect();
+                let k = chars.len() as i64;
+                if rotate != 0.0 {
+                    // Vertical, top to bottom, centred on the anchor.
+                    let col = (x / CELL_W).floor() as i64;
+                    let mid = (y / CELL_H).floor() as i64;
+                    let r0 = match anchor {
+                        Start => mid - k + 1,
+                        Middle => mid - k / 2,
+                        End => mid,
+                    };
+                    for i in 0..chars.len() { g.put(col, r0 + i as i64, chars[i], c); }
+                    continue;
+                }
+                let row = ((y - CELL_H * 0.3) / CELL_H).floor() as i64;
+                let start = match anchor {
+                    Start => (x / CELL_W).round() as i64,
+                    Middle => ((x / CELL_W) - (k as f64) / 2.0).round() as i64,
+                    End => (x / CELL_W).round() as i64 - k,
+                };
+                for i in 0..chars.len() { g.put(start + i as i64, row, chars[i], c); }
+            }
+        }
+    }
+    let out = StrBuf::new();
+    for r in 0..rows {
+        let line = StrBuf::new();
+        let last: Color | none = none;
+        let lastbg: Color | none = none;
+        let end = 0usize;
+        // The last column with something in it.
+        for c in 0..cols {
+            let i = r * cols + c;
+            if g.chars[i] != '\0' || g.dots[i] != 0 { end = c + 1; }
+        }
+        for c in 0..end {
+            let i = r * cols + c;
+            let (ch, col) = if g.chars[i] != '\0' {
+                (g.chars[i], g.fg[i])
+            } else if g.dots[i] != 0 {
+                (char::from_u32(0x2800 + (g.dots[i] as u32)) ?? ' ', g.ink[i])
+            } else {
+                (' ', Color::clear())
+            };
+            if color {
+                if ch != ' ' && col.a > 0 && last != col {
+                    line.push_str(ESC + f"[38;2;{col.r};{col.g};{col.b}m");
+                    last = col;
+                }
+                let b = g.bg[i];
+                if b.a > 0 && lastbg != b {
+                    line.push_str(ESC + f"[48;2;{b.r};{b.g};{b.b}m");
+                    lastbg = b;
+                } else if b.a == 0 && !(lastbg is none) {
+                    line.push_str(ESC + "[49m");
+                    lastbg = none;
+                }
+            }
+            line.push(ch);
+        }
+        if color && (!(last is none) || !(lastbg is none)) { line.push_str(ESC + "[0m"); }
+        out.push_str(line.to_str());
+        if r + 1 < rows { out.push('\n'); }
+    }
+    out.to_str()
+}
+
+fn sample(rgba: List<u8>, cols: usize, rows: usize, x: f64, y: f64, w: f64, h: f64, px: f64, py: f64) -> Color {
+    let c = (((px - x) / w * (cols as f64)).floor().max(0.0) as usize).min(cols - 1);
+    let r = (((py - y) / h * (rows as f64)).floor().max(0.0) as usize).min(rows - 1);
+    let o = 4 * (r * cols + c);
+    Color::rgba(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3])
+}
+
+fn strokes(g: Grid, f: Flat, kx: f64, ky: f64, c: Color) {
+    for s in 0..f.starts.len() - 1 {
+        let a = f.starts[s];
+        let b = f.starts[s + 1];
+        let n = if f.closed[s] { b - a + 1 } else { b - a };
+        for k in 1..n {
+            let i = a + k - 1;
+            let j = if a + k == b { a } else { a + k };
+            seg(g, f.xy[2 * i] * kx, f.xy[2 * i + 1] * ky, f.xy[2 * j] * kx, f.xy[2 * j + 1] * ky, c);
+        }
+        if b - a == 1 { g.dot((f.xy[2 * a] * kx).floor() as i64, (f.xy[2 * a + 1] * ky).floor() as i64, c); }
+    }
+}
+
+// A line of dots, one per step along the longer axis.
+fn seg(g: Grid, x0: f64, y0: f64, x1: f64, y1: f64, c: Color) {
+    let steps = ((x1 - x0).abs().max((y1 - y0).abs()).ceil() as usize).max(1).min(10000);
+    for k in 0..steps + 1 {
+        let t = (k as f64) / (steps as f64);
+        g.dot((x0 + (x1 - x0) * t).floor() as i64, (y0 + (y1 - y0) * t).floor() as i64, c);
+    }
+}
+
+// Dots whose centres lie inside (nonzero); faint fills every other dot.
+fn fill(g: Grid, f: Flat, kx: f64, ky: f64, c: Color) {
+    let faint = c.a < 128;
+    let h = (g.rows * 4) as i64;
+    let w = (g.cols * 2) as i64;
+    let ys: List<f64> = [];
+    for i in 0..f.xy.len() / 2 { ys.push(f.xy[2 * i + 1] * ky); }
+    let lo = ys.iter().fold(f64::INFINITY, |a, v| a.min(v)).floor().max(0.0) as i64;
+    let hi = (ys.iter().fold(f64::NEG_INFINITY, |a, v| a.max(v)).ceil() as i64).min(h);
+    for y in lo..hi {
+        let cy = (y as f64) + 0.5;
+        let xs: List<(f64, i64)> = [];
+        for s in 0..f.starts.len() - 1 {
+            let a = f.starts[s];
+            let b = f.starts[s + 1];
+            for i in a..b {
+                let j = if i + 1 == b { a } else { i + 1 };
+                let (x0, y0, x1, y1) = (f.xy[2 * i] * kx, f.xy[2 * i + 1] * ky, f.xy[2 * j] * kx, f.xy[2 * j + 1] * ky);
+                if (y0 <= cy) != (y1 <= cy) {
+                    let t = (cy - y0) / (y1 - y0);
+                    xs.push((x0 + (x1 - x0) * t, if y1 > y0 { 1 } else { -1 }));
+                }
+            }
+        }
+        xs.sort_by(|a, b| a.0.total_cmp(b.0));
+        let wind = 0i64;
+        for k in 0..xs.len() {
+            let prev = wind;
+            wind += xs[k].1;
+            if prev != 0 && k > 0 {
+                let x0 = (xs[k - 1].0 - 0.5).ceil().max(0.0) as i64;
+                let x1 = ((xs[k].0 - 0.5).floor() as i64).min(w - 1);
+                for x in x0..x1 + 1 {
+                    if !faint || (x + y) % 2 == 0 { g.dot(x, y, c); }
+                }
+            }
+        }
+    }
+}

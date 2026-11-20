@@ -1,0 +1,167 @@
+//! Plotting the columns of a `table::Table` by name, with the `table`
+//! feature. Each function takes the table first, so it pipes:
+//! `t |> plot::frame::scatter("x" ↦ "y")`. Numeric columns plot as they
+//! are (nulls as gaps), date and datetime columns as dates with a date
+//! axis, and `by` splits the rows by a text column into one labelled
+//! layer per value.
+
+use pkg::axes::axes;
+use pkg::ops::Formula;
+use pkg::{Axes, Bins, PlotError};
+use table::{Table, Value};
+
+const DAY: f64 = 86400.0;
+
+// A column as f64 (dates as seconds since the epoch) and whether it is
+// a date.
+fn numbers(t: Table, name: str) throws (PlotError) -> (List<f64>, bool) {
+    let c = try t.column(name) catch _ {
+        throw PlotError::Column { what: f"no column \"{name}\"; the table has {t.names():?}" };
+    };
+    match c.dtype() {
+        I64 | F64 => {
+            let v = try c.f64_list() catch e { throw PlotError::Column { what: f"\"{name}\": {e}" }; };
+            (v.clone(), false)
+        }
+        Date | DateTime => {
+            let v: List<f64> = List::from_fn(c.len(), |i| match c.get(i) {
+                Value::Date(d) => (d.days() as f64) * DAY,
+                Value::DateTime(dt) => (dt.ns() as f64) / 1e9,
+                _ => f64::NAN,
+            });
+            (v, true)
+        }
+        other => throw PlotError::Column { what: f"\"{name}\" holds {other:?}, not numbers or dates; cast it first (`c.cast(DType::F64)`)" },
+    }
+}
+
+fn texts(t: Table, name: str) throws (PlotError) -> List<str> {
+    let c = try t.column(name) catch _ {
+        throw PlotError::Column { what: f"no column \"{name}\"; the table has {t.names():?}" };
+    };
+    try c.to_strs() catch _ {
+        // Numbers and dates group by their printed value.
+        List::from_fn(c.len(), |i| f"{c.get(i)}")
+    }
+}
+
+// Row indices per distinct value of `by`, in first-seen order.
+fn groups(t: Table, by: str) throws (PlotError) -> (List<str>, List<List<usize>>) {
+    let keys = try texts(t, by);
+    let names: List<str> = [];
+    let rows: List<List<usize>> = [];
+    let at: Dict<str, usize> = Dict::new();
+    for i in 0..keys.len() {
+        let k = keys[i];
+        match at.get(k) {
+            j: usize => rows[j].push(i),
+            none => {
+                at[k] = names.len();
+                names.push(k);
+                rows.push([i]);
+            }
+        }
+    }
+    (names, rows)
+}
+
+fn pick(v: List<f64>, idx: List<usize>) -> List<f64> { List::from_fn(idx.len(), |i| v[idx[i]]) }
+
+fn labelled(f: Formula, xdate: bool, a: Axes) -> Axes {
+    let b = a.xlabel(f.x).ylabel(f.y);
+    if xdate { b.dates() } else { b }
+}
+
+fn xy(t: Table, f: Formula, by: str, line: bool) throws (PlotError) -> Axes {
+    let (x, xdate) = try numbers(t, f.x);
+    let (y, _) = try numbers(t, f.y);
+    let a = axes();
+    if by.is_empty() {
+        a = if line { a.line(x, y) } else { a.scatter(x, y) };
+    } else {
+        let (names, rows) = try groups(t, by);
+        for k in 0..names.len() {
+            let (gx, gy) = (pick(x, rows[k]), pick(y, rows[k]));
+            a = (if line { a.line(gx, gy) } else { a.scatter(gx, gy) }).label(names[k]);
+        }
+    }
+    labelled(f, xdate, a)
+}
+
+/// A line of column `f.y` against `f.x`, one per value of column `by`
+/// when given.
+///
+/// ```nabi
+/// use plot::ops::MapsTo;
+///
+/// let t = table::table! { "day": [1, 2, 3], "temp": [3.5, 4.0, 2.5] };
+/// let ax = try t |> plot::frame::line("day" ↦ "temp");
+/// assert((try ax.svg()).contains(">temp<"));
+/// ```
+pub fn line(t: Table, f: Formula, by: str = "") throws (PlotError) -> Axes { try xy(t, f, by, true) }
+
+/// Markers at columns `f.x`, `f.y`, one colour per value of `by`.
+///
+/// ```nabi
+/// use plot::ops::MapsTo;
+///
+/// let t = table::table! { "x": [1.0, 2.0, 3.0, 4.0], "y": [2.0, 1.0, 4.0, 3.0], "g": ["a", "b", "a", "b"] };
+/// let ax = try plot::frame::scatter(t, "x" ↦ "y", by: "g");
+/// assert(ax.len() == 2);
+/// ```
+pub fn scatter(t: Table, f: Formula, by: str = "") throws (PlotError) -> Axes { try xy(t, f, by, false) }
+
+/// Several columns as lines against column `x`, labelled by name.
+///
+/// ```nabi
+/// let t = table::table! { "x": [1, 2, 3], "a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0] };
+/// assert((try plot::frame::lines(t, "x", ["a", "b"])).len() == 2);
+/// ```
+pub fn lines(t: Table, x: str, ys: List<str>) throws (PlotError) -> Axes {
+    let (xv, xdate) = try numbers(t, x);
+    let a = axes();
+    for name in ys {
+        let (yv, _) = try numbers(t, name);
+        a = a.line(xv, yv).label(name);
+    }
+    let b = a.xlabel(x);
+    if xdate { b.dates() } else { b }
+}
+
+/// A histogram of a column.
+///
+/// ```nabi
+/// let t = table::table! { "v": [1.0, 2.0, 2.0, 3.0] };
+/// assert((try (try plot::frame::hist(t, "v")).svg()).contains(">v<"));
+/// ```
+pub fn hist(t: Table, column: str, bins: Bins = Bins::Auto) throws (PlotError) -> Axes {
+    let (v, _) = try numbers(t, column);
+    axes().hist(v, bins).xlabel(column)
+}
+
+/// Bars of column `f.y` at the labels in column `f.x`.
+///
+/// ```nabi
+/// use plot::ops::MapsTo;
+///
+/// let t = table::table! { "city": ["a", "b"], "pop": [3, 5] };
+/// assert((try (try plot::frame::bar(t, "city" ↦ "pop")).svg()).contains(">b<"));
+/// ```
+pub fn bar(t: Table, f: Formula) throws (PlotError) -> Axes {
+    let labels = try texts(t, f.x);
+    let (h, _) = try numbers(t, f.y);
+    axes().bar(labels, h).xlabel(f.x).ylabel(f.y)
+}
+
+/// Box plots of column `y` per value of column `by`.
+///
+/// ```nabi
+/// let t = table::table! { "y": [1.0, 2.0, 3.0, 4.0], "g": ["a", "a", "b", "b"] };
+/// assert((try (try plot::frame::boxplot(t, "y", "g")).svg()).contains(">b<"));
+/// ```
+pub fn boxplot(t: Table, y: str, by: str) throws (PlotError) -> Axes {
+    let (v, _) = try numbers(t, y);
+    let (names, rows) = try groups(t, by);
+    let gs: List<List<f64>> = rows.iter().map(|r| pick(v, r)).collect();
+    axes().boxplot(gs, names).xlabel(by).ylabel(y)
+}

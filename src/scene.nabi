@@ -1,0 +1,104 @@
+//! A rendered figure as drawing primitives in px (y down), the one
+//! input of every backend. Layout makes it once; SVG writes it, the
+//! rasterizer paints it, the terminal approximates it.
+
+use pkg::layer::Marker;
+use pkg::text::Run;
+use pkg::{Color, Path};
+
+/// How a line is drawn.
+///
+/// ```nabi
+/// let s = try plot::line([0, 1], [0, 1]).figure().scene();
+/// assert(s.items.len() > 0);
+/// ```
+#[derive(Clone, Debug)]
+pub struct Stroke {
+    pub color: Color;
+    pub width: f64;
+    /// Dash and gap lengths in px; empty for solid.
+    pub dash: List<f64>;
+    /// Round ends and joins instead of butt ends and miter joins.
+    pub round: bool;
+}
+
+/// Where a text item's `x` is: at its start, middle or end.
+///
+/// ```nabi
+/// use plot::scene::Anchor;
+///
+/// assert(Anchor::Start != Anchor::End);
+/// ```
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Anchor { Start, Middle, End }
+
+/// One drawing primitive. `clip` indexes `Scene::clips`, 0 for none.
+///
+/// ```nabi
+/// use plot::scene::Item;
+///
+/// let s = try plot::scatter([0, 1], [0, 1]).figure().scene();
+/// assert(s.items.iter().any(|it| it is Item::Markers));
+/// ```
+#[derive(Clone, Debug)]
+pub enum Item {
+    /// A filled path (nonzero winding).
+    Fill { path: Path; color: Color; clip: usize; },
+    /// A stroked path.
+    Line { path: Path; stroke: Stroke; clip: usize; },
+    /// Markers of one shape centred at `(xs[i], ys[i])`, `sizes[i]` px
+    /// across and filled with `fills[i]`; a list of one applies to all.
+    Markers { xs: List<f64>; ys: List<f64>; shape: Marker; sizes: List<f64>; fills: List<Color>; edge: Color; edge_width: f64; clip: usize; },
+    /// Text with its baseline at `y`, rotated `rotate` degrees
+    /// counterclockwise about `(x, y)`.
+    Text { x: f64; y: f64; runs: List<Run>; size: f64; color: Color; anchor: Anchor; rotate: f64; },
+    /// An RGBA image of `cols` x `rows` pixels (top row first) stretched
+    /// over the rectangle, drawn without smoothing.
+    Image { x: f64; y: f64; w: f64; h: f64; cols: usize; rows: usize; rgba: List<u8>; clip: usize; },
+}
+
+/// A clip rectangle.
+///
+/// ```nabi
+/// let r = plot::scene::Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 };
+/// assert(r.right() == 4.0 && r.bottom() == 6.0);
+/// ```
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Rect {
+    pub x: f64;
+    pub y: f64;
+    pub w: f64;
+    pub h: f64;
+}
+
+impl Rect {
+    /// The right edge.
+    ///
+    /// ```nabi
+    /// assert(plot::scene::Rect { x: 1.0, y: 0.0, w: 2.0, h: 1.0 }.right() == 3.0);
+    /// ```
+    pub fn right(self) -> f64 { self.x + self.w }
+    /// The bottom edge.
+    ///
+    /// ```nabi
+    /// assert(plot::scene::Rect { x: 0.0, y: 1.0, w: 1.0, h: 2.0 }.bottom() == 3.0);
+    /// ```
+    pub fn bottom(self) -> f64 { self.y + self.h }
+}
+
+/// A figure ready for a backend.
+///
+/// ```nabi
+/// let s = try plot::line([0, 1], [0, 1]).figure().scene();
+/// assert(s.clips.len() >= 2);
+/// ```
+#[derive(Clone, Debug)]
+pub struct Scene {
+    pub width: f64;
+    pub height: f64;
+    pub background: Color;
+    pub font_family: str;
+    /// Clip rectangles; entry 0 is the whole figure.
+    pub clips: List<Rect>;
+    pub items: List<Item>;
+}

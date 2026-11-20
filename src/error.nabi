@@ -1,0 +1,54 @@
+//! The one error type of the package. Builders never throw: what they
+//! cannot check yet (a colour name, data lengths, a log axis over zero)
+//! is checked when the figure is rendered, and the message says what to
+//! write instead.
+
+/// What went wrong while rendering or saving a figure.
+///
+/// ```nabi
+/// use plot::PlotError;
+///
+/// let e = try {
+///     _ = try plot::line([1.0, 2.0], [1.0]).svg();
+///     PlotError::Empty { what: "" }
+/// } catch e: PlotError { e };
+/// assert(f"{e}".contains("2 x values and 1 y values"));
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+pub enum PlotError {
+    /// Data series of one layer whose lengths differ; `what` names them.
+    Length { what: str; },
+    /// A layer or a grid with no values where it needs some.
+    Empty { what: str; },
+    /// A colour string that is not `#rgb`, `#rrggbb`, `#rrggbbaa`, a
+    /// name, or `C0` to `C9`.
+    Color { spec: str; },
+    /// A value the axis scale cannot show: zero or a negative number on
+    /// a log axis, NaN limits, a reversed range.
+    Scale { what: str; },
+    /// An argument out of its range (a negative width, zero bins, a
+    /// grid with ragged rows); `what` says which.
+    Argument { what: str; },
+    /// A table column that is missing or not numeric (`frame` module);
+    /// `what` names it and what the table has.
+    Column { what: str; },
+    /// A file could not be written; `what` is the path and the reason.
+    Io { what: str; },
+}
+
+impl Display for PlotError {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let s = match self {
+            PlotError::Length { what } => f"lengths do not match: {what}; pass one value of each per point",
+            PlotError::Empty { what } => f"{what} has no values; pass at least one point or drop the layer",
+            PlotError::Color { spec } => f"unknown colour \"{spec}\"; write \"#rrggbb\", a name such as \"red\", or \"C0\" to \"C9\" for the theme's cycle",
+            PlotError::Scale { what } => f"scale: {what}",
+            PlotError::Argument { what } => f"invalid argument: {what}",
+            PlotError::Column { what } => f"column: {what}",
+            PlotError::Io { what } => f"cannot write {what}",
+        };
+        try f.write_str(s)
+    }
+}
+
+impl Error for PlotError {}

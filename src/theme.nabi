@@ -1,0 +1,137 @@
+//! Themes: colours, sizes and the colour cycle. `light` and `dark` use
+//! the Nabi docs site's tokens, so a figure sits on its pages.
+
+use pkg::color::okabe_ito;
+use pkg::{Color, Colormap};
+
+/// How a figure looks: colours, type sizes, line widths, the series
+/// colour cycle and the default colormap. Every field is public; start
+/// from `light()` or `dark()` and change what you need.
+///
+/// ```nabi
+/// use plot::Theme;
+///
+/// let t = Theme::dark();
+/// t.font_size = 13.0;
+/// let svg = try plot::line([0.0, 1.0], [1.0, 0.0]).theme(t).svg();
+/// assert(svg.contains("#141114"));
+/// ```
+#[derive(Clone, Debug)]
+pub struct Theme {
+    /// The figure background; transparent to let the page show.
+    pub background: Color;
+    /// The plot area background.
+    pub panel: Color;
+    /// Titles, labels and text.
+    pub ink: Color;
+    /// Tick labels and legend text.
+    pub ink_muted: Color;
+    /// Axis lines and ticks.
+    pub axis: Color;
+    /// Grid lines.
+    pub grid: Color;
+    /// Legend and colorbar frames.
+    pub frame: Color;
+    /// The CSS font stack written into SVG output.
+    pub font_family: str;
+    /// Tick labels, legend and text, in px.
+    pub font_size: f64;
+    /// Axis titles, in px.
+    pub label_size: f64;
+    /// Axes titles, in px.
+    pub title_size: f64;
+    /// Lines, in px.
+    pub line_width: f64;
+    /// Marker diameter, in px.
+    pub marker_size: f64;
+    /// Axis line width, in px.
+    pub axis_width: f64;
+    /// Grid line width, in px.
+    pub grid_width: f64;
+    /// Tick length, in px.
+    pub tick_length: f64;
+    /// Grid lines at the major ticks.
+    pub show_grid: bool;
+    /// Draw the top and right axis lines too (a full box).
+    pub box_frame: bool;
+    /// Series colours, used in turn.
+    pub cycle: List<Color>;
+    /// The colormap for heatmaps, contours and colour-by-value.
+    pub colormap: Colormap;
+}
+
+impl Theme {
+    /// Light: the docs site's light tokens, Okabe-Ito series colours.
+    ///
+    /// ```nabi
+    /// assert(plot::Theme::light().show_grid);
+    /// ```
+    pub fn light() -> Theme {
+        Theme {
+            background: Color::rgb(252, 251, 251),
+            panel: Color::rgb(252, 251, 251),
+            ink: Color::rgb(31, 27, 30),
+            ink_muted: Color::rgb(86, 78, 83),
+            axis: Color::rgb(107, 98, 104),
+            grid: Color::rgb(233, 228, 230),
+            frame: Color::rgb(214, 207, 210),
+            font_family: "Geist, 'Geist Fallback', system-ui, sans-serif",
+            font_size: 11.0,
+            label_size: 12.0,
+            title_size: 14.0,
+            line_width: 1.75,
+            marker_size: 6.0,
+            axis_width: 1.0,
+            grid_width: 1.0,
+            tick_length: 4.0,
+            show_grid: true,
+            box_frame: false,
+            cycle: okabe_ito(),
+            colormap: Colormap::viridis(),
+        }
+    }
+
+    /// Dark: the docs site's dark tokens; the cycle's black becomes the
+    /// ink colour.
+    ///
+    /// ```nabi
+    /// assert(plot::Theme::dark().background == plot::Color::rgb(20, 17, 20));
+    /// ```
+    pub fn dark() -> Theme {
+        let cycle = okabe_ito();
+        cycle[7] = Color::rgb(250, 247, 248);
+        Theme {
+            background: Color::rgb(20, 17, 20),
+            panel: Color::rgb(20, 17, 20),
+            ink: Color::rgb(250, 247, 248),
+            ink_muted: Color::rgb(189, 179, 184),
+            axis: Color::rgb(149, 139, 144),
+            grid: Color::rgb(43, 38, 41),
+            frame: Color::rgb(59, 53, 57),
+            cycle,
+            ..Theme::light()
+        }
+    }
+
+    /// The same theme on a transparent background.
+    ///
+    /// ```nabi
+    /// assert(plot::Theme::light().transparent().background.a == 0);
+    /// ```
+    pub fn transparent(self) -> Theme {
+        let t = self;
+        t.background = Color::clear();
+        t.panel = Color::clear();
+        t
+    }
+
+    /// Series colour `i`, wrapping around the cycle.
+    ///
+    /// ```nabi
+    /// assert(plot::Theme::light().series(0) == plot::Color::rgb(0, 114, 178));
+    /// ```
+    pub fn series(self, i: usize) -> Color {
+        if self.cycle.is_empty() { return self.ink; }
+        self.cycle[i % self.cycle.len()]
+    }
+}

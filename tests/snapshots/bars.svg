@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240" viewBox="0 0 360 240" font-family="Geist, 'Geist Fallback', system-ui, sans-serif">
+<defs>
+<clipPath id="c1"><rect x="42.29" y="15.5" width="301.71" height="193.75"/></clipPath>
+</defs>
+<rect width="100%" height="100%" fill="#fcfbfb"/>
+<path d="M98.86 15.5L98.86 209.25M193.15 15.5L193.15 209.25M287.43 15.5L287.43 209.25" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M42.29 209.25L344 209.25M42.29 147.74L344 147.74M42.29 86.23L344 86.23M42.29 24.73L344 24.73" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<g clip-path="url(#c1)">
+<path d="M61.15 147.74L98.86 147.74L98.86 209.25L61.15 209.25ZM155.43 86.23L193.15 86.23L193.15 209.25L155.43 209.25ZM249.72 24.73L287.43 24.73L287.43 209.25L249.72 209.25Z" fill="#0072b2"/>
+<path d="M98.86 86.23L136.58 86.23L136.58 209.25L98.86 209.25ZM193.15 147.74L230.86 147.74L230.86 209.25L193.15 209.25ZM287.43 178.5L325.14 178.5L325.14 209.25L287.43 209.25Z" fill="#d55e00"/>
+</g>
+<path d="M42.29 15.5L42.29 209.25L344 209.25" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M98.86 209.25L98.86 213.25M193.15 209.25L193.15 213.25M287.43 209.25L287.43 213.25M42.29 209.25L38.29 209.25M42.29 147.74L38.29 147.74M42.29 86.23L38.29 86.23M42.29 24.73L38.29 24.73" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="98.86" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">a</text>
+<text x="193.15" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">b</text>
+<text x="287.43" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">c</text>
+<text x="34.29" y="213.16" font-size="11" fill="#564e53" text-anchor="end">0</text>
+<text x="34.29" y="151.65" font-size="11" fill="#564e53" text-anchor="end">1</text>
+<text x="34.29" y="90.14" font-size="11" fill="#564e53" text-anchor="end">2</text>
+<text x="34.29" y="28.63" font-size="11" fill="#564e53" text-anchor="end">3</text>
+<text x="16.52" y="112.38" font-size="12" fill="#1f1b1e" text-anchor="middle" transform="rotate(-90 16.52 112.38)">count</text>
+<path d="M289.57 23.5L336 23.5L336 61L289.57 61Z" fill="#fcfbfb" fill-opacity="0.9"/>
+<path d="M289.57 23.5L336 23.5L336 61L289.57 61Z" fill="none" stroke="#d6cfd2" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M298.57 30.88L316.57 30.88L316.57 39.88L298.57 39.88Z" fill="#0072b2"/>
+<text x="324.57" y="39.28" font-size="11" fill="#564e53">x</text>
+<path d="M298.57 44.63L316.57 44.63L316.57 53.63L298.57 53.63Z" fill="#d55e00"/>
+<text x="324.57" y="53.03" font-size="11" fill="#564e53">y</text>
+</svg>

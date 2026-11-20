@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="260" viewBox="0 0 400 260" font-family="Geist, 'Geist Fallback', system-ui, sans-serif">
+<defs>
+<clipPath id="c1"><rect x="44.94" y="37.38" width="339.06" height="174.88"/></clipPath>
+</defs>
+<rect width="100%" height="100%" fill="#fcfbfb"/>
+<path d="M60.36 37.38L60.36 212.25M214.47 37.38L214.47 212.25M368.59 37.38L368.59 212.25" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M44.94 205.35L384 205.35M44.94 125.28L384 125.28M44.94 45.21L384 45.21" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<g clip-path="url(#c1)">
+<path d="M60.36 125.28L73.2 99.71L86.04 76.82L98.88 59L111.73 48.13L124.57 45.32L137.41 50.9L150.26 64.25L163.1 84L175.94 108.07L188.79 133.94L201.63 158.91L214.47 180.35L227.32 196.03L240.16 204.3L253 204.3L265.84 196.02L278.69 180.34L291.53 158.89L304.37 133.93L317.22 108.06L330.06 83.99L342.9 64.24L355.75 50.89L368.59 45.32" fill="none" stroke="#0072b2" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+<g fill="#d55e00">
+<circle cx="60.36" cy="77.24" r="3"/>
+<circle cx="73.2" cy="77.97" r="3"/>
+<circle cx="86.04" cy="80.15" r="3"/>
+<circle cx="98.88" cy="83.71" r="3"/>
+<circle cx="111.73" cy="88.53" r="3"/>
+<circle cx="124.57" cy="94.48" r="3"/>
+<circle cx="137.41" cy="101.38" r="3"/>
+<circle cx="150.26" cy="109" r="3"/>
+<circle cx="163.1" cy="117.11" r="3"/>
+<circle cx="175.94" cy="125.48" r="3"/>
+<circle cx="188.79" cy="133.84" r="3"/>
+<circle cx="201.63" cy="141.94" r="3"/>
+<circle cx="214.47" cy="149.54" r="3"/>
+<circle cx="227.32" cy="156.39" r="3"/>
+<circle cx="240.16" cy="162.29" r="3"/>
+<circle cx="253" cy="167.06" r="3"/>
+<circle cx="265.84" cy="170.55" r="3"/>
+<circle cx="278.69" cy="172.66" r="3"/>
+<circle cx="291.53" cy="173.32" r="3"/>
+<circle cx="304.37" cy="172.52" r="3"/>
+<circle cx="317.22" cy="170.27" r="3"/>
+<circle cx="330.06" cy="166.65" r="3"/>
+<circle cx="342.9" cy="161.77" r="3"/>
+<circle cx="355.75" cy="155.77" r="3"/>
+<circle cx="368.59" cy="148.84" r="3"/>
+</g>
+</g>
+<path d="M44.94 37.38L44.94 212.25L384 212.25" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M60.36 212.25L60.36 216.25M214.47 212.25L214.47 216.25M368.59 212.25L368.59 216.25M44.94 205.35L40.94 205.35M44.94 125.28L40.94 125.28M44.94 45.21L40.94 45.21" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="60.36" y="227.06" font-size="11" fill="#564e53" text-anchor="middle">0</text>
+<text x="214.47" y="227.06" font-size="11" fill="#564e53" text-anchor="middle">3</text>
+<text x="368.59" y="227.06" font-size="11" fill="#564e53" text-anchor="middle">6</text>
+<text x="36.94" y="209.26" font-size="11" fill="#564e53" text-anchor="end">−1</text>
+<text x="36.94" y="129.19" font-size="11" fill="#564e53" text-anchor="end">0</text>
+<text x="36.94" y="49.11" font-size="11" fill="#564e53" text-anchor="end">1</text>
+<text x="214.47" y="243.52" font-size="12" fill="#1f1b1e" text-anchor="middle">t [s]</text>
+<text x="16.52" y="124.81" font-size="12" fill="#1f1b1e" text-anchor="middle" transform="rotate(-90 16.52 124.81)">y</text>
+<text x="214.47" y="27.22" font-size="14" fill="#1f1b1e" text-anchor="middle">Wave</text>
+<path d="M52.94 166.75L135.75 166.75L135.75 204.25L52.94 204.25Z" fill="#fcfbfb" fill-opacity="0.9"/>
+<path d="M52.94 166.75L135.75 166.75L135.75 204.25L52.94 204.25Z" fill="none" stroke="#d6cfd2" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M59.94 178.63L81.94 178.63" fill="none" stroke="#0072b2" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="87.94" y="182.53" font-size="11" fill="#564e53">sin(1.3t)</text>
+<g fill="#d55e00">
+<circle cx="70.94" cy="192.38" r="3"/>
+</g>
+<text x="87.94" y="196.28" font-size="11" fill="#564e53">samples</text>
+</svg>

@@ -1,0 +1,272 @@
+//! Label text with a TeX-like math subset. Between `$` signs: Greek and
+//! symbol commands (`\alpha`, `\times`, `\leq`, ...), superscripts and
+//! subscripts (`x^2`, `x_{ij}`, nested), `{..}` groups and `\mathrm{..}`
+//! or `\text{..}` for upright words. Everything is set upright in the
+//! one built-in face; fractions, roots and italics are not drawn. `\$`
+//! writes a dollar sign.
+
+use pkg::font;
+
+/// A piece of text at one size and baseline: `scale` times the base
+/// size, raised by `rise` ems (negative lowers it).
+///
+/// ```nabi
+/// assert(plot::text::parse("$x^2$")[1].scale < 1.0);
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+pub struct Run {
+    pub text: str;
+    pub scale: f64;
+    pub rise: f64;
+}
+
+const SCRIPT: f64 = 0.7;
+const SUP: f64 = 0.38;
+const SUB: f64 = -0.2;
+
+/// The runs of `s`.
+///
+/// ```nabi
+/// use plot::text::parse;
+///
+/// let r = parse("$\\alpha^2$ [m]");
+/// assert(r[0].text == "\u{3b1}" && r[1].text == "2" && r[1].rise > 0.0);
+/// assert(r[2].text == " [m]");
+/// assert(parse("cost \\$5")[0].text == "cost $5");
+/// ```
+pub fn parse(s: str) -> List<Run> {
+    let out: List<Run> = [];
+    let cs: List<char> = s.chars().collect();
+    let buf = StrBuf::new();
+    let i = 0usize;
+    while i < cs.len() {
+        let c = cs[i];
+        if c == '\\' && i + 1 < cs.len() && cs[i + 1] == '$' {
+            buf.push('$');
+            i += 2;
+            continue;
+        }
+        if c == '$' {
+            // Find the closing `$`; an unmatched one is literal.
+            let j = i + 1;
+            while j < cs.len() && !(cs[j] == '$' && cs[j - 1] != '\\') { j += 1; }
+            if j >= cs.len() {
+                buf.push('$');
+                i += 1;
+                continue;
+            }
+            flush(out, buf, 1.0, 0.0);
+            let k = 0usize;
+            let inner: List<char> = cs[i + 1:j].to_list();
+            math(out, inner, ref k, 1.0, 0.0, false);
+            i = j + 1;
+            continue;
+        }
+        buf.push(c);
+        i += 1;
+    }
+    flush(out, buf, 1.0, 0.0);
+    merge(out)
+}
+
+fn flush(out: List<Run>, buf: StrBuf, scale: f64, rise: f64) {
+    if buf.is_empty() { return; }
+    out.push(Run { text: buf.to_str(), scale, rise });
+    buf.clear();
+}
+
+// Adjacent runs at the same size and baseline become one.
+fn merge(rs: List<Run>) -> List<Run> {
+    let out: List<Run> = [];
+    for r in rs {
+        let n = out.len();
+        if n > 0 && out[n - 1].scale == r.scale && out[n - 1].rise == r.rise {
+            out[n - 1] = Run { text: out[n - 1].text + r.text, scale: r.scale, rise: r.rise };
+        } else {
+            out.push(r);
+        }
+    }
+    out
+}
+
+// Sets math from `cs[k..]` until the end or, in a group, the closing
+// brace. A script takes one atom: a char, a command or a group.
+fn math(out: List<Run>, cs: List<char>, ref k: usize, scale: f64, rise: f64, group: bool) {
+    let buf = StrBuf::new();
+    while k < cs.len() {
+        let c = cs[k];
+        if c == '}' {
+            k += 1;
+            if group { break; }
+            continue;
+        }
+        if c == '{' {
+            k += 1;
+            flush(out, buf, scale, rise);
+            math(out, cs, ref k, scale, rise, true);
+            continue;
+        }
+        if c == '^' || c == '_' {
+            k += 1;
+            flush(out, buf, scale, rise);
+            let s2 = scale * SCRIPT;
+            let r2 = rise + (if c == '^' { SUP } else { SUB }) * scale;
+            atom(out, cs, ref k, s2, r2);
+            continue;
+        }
+        if c == '\\' {
+            k += 1;
+            let (name, text) = command(cs, ref k);
+            if name == "mathrm" || name == "text" || name == "mathit" || name == "mathbf" {
+                flush(out, buf, scale, rise);
+                if k < cs.len() && cs[k] == '{' {
+                    k += 1;
+                    math(out, cs, ref k, scale, rise, true);
+                }
+                continue;
+            }
+            buf.push_str(text);
+            continue;
+        }
+        buf.push(c);
+        k += 1;
+    }
+    flush(out, buf, scale, rise);
+}
+
+fn atom(out: List<Run>, cs: List<char>, ref k: usize, scale: f64, rise: f64) {
+    if k >= cs.len() { return; }
+    let c = cs[k];
+    if c == '{' {
+        k += 1;
+        math(out, cs, ref k, scale, rise, true);
+    } else if c == '\\' {
+        k += 1;
+        let (_, text) = command(cs, ref k);
+        out.push(Run { text, scale, rise });
+    } else {
+        k += 1;
+        out.push(Run { text: f"{c}", scale, rise });
+    }
+}
+
+// Reads a command name after `\` and gives its text.
+fn command(cs: List<char>, ref k: usize) -> (str, str) {
+    if k >= cs.len() { return ("", "\\"); }
+    if !cs[k].is_ascii_alphabetic() {
+        let c = cs[k];
+        k += 1;
+        let t = match c {
+            ',' => "\u{2009}",
+            ';' | ':' => "\u{2005}",
+            ' ' => " ",
+            '!' => "",
+            _ => f"{c}",
+        };
+        return (f"{c}", t);
+    }
+    let name = StrBuf::new();
+    while k < cs.len() && cs[k].is_ascii_alphabetic() {
+        name.push(cs[k]);
+        k += 1;
+    }
+    let n = name.to_str();
+    // A space that only ends the name (`\Delta x`) is dropped, as in TeX;
+    // one before an operator (`\tau = 4`) stays, standing in for TeX's
+    // spacing around it.
+    if k + 1 < cs.len() && cs[k] == ' ' && cs[k + 1].is_alphanumeric() { k += 1; }
+    (n, symbol(n) ?? ("\\" + n))
+}
+
+/// The character a math command stands for, `none` if unknown.
+///
+/// ```nabi
+/// assert(plot::text::symbol("Omega") == "\u{3a9}");
+/// assert(plot::text::symbol("times") == "\u{d7}");
+/// ```
+pub fn symbol(name: str) -> str | none {
+    match name {
+        "alpha" => "\u{3b1}", "beta" => "\u{3b2}", "gamma" => "\u{3b3}", "delta" => "\u{3b4}",
+        "epsilon" => "\u{3f5}", "varepsilon" => "\u{3b5}", "zeta" => "\u{3b6}", "eta" => "\u{3b7}",
+        "theta" => "\u{3b8}", "vartheta" => "\u{3d1}", "iota" => "\u{3b9}", "kappa" => "\u{3ba}",
+        "lambda" => "\u{3bb}", "mu" => "\u{3bc}", "nu" => "\u{3bd}", "xi" => "\u{3be}",
+        "pi" => "\u{3c0}", "rho" => "\u{3c1}", "sigma" => "\u{3c3}", "varsigma" => "\u{3c2}",
+        "tau" => "\u{3c4}", "upsilon" => "\u{3c5}", "phi" => "\u{3d5}", "varphi" => "\u{3c6}",
+        "chi" => "\u{3c7}", "psi" => "\u{3c8}", "omega" => "\u{3c9}",
+        "Gamma" => "\u{393}", "Delta" => "\u{394}", "Theta" => "\u{398}", "Lambda" => "\u{39b}",
+        "Xi" => "\u{39e}", "Pi" => "\u{3a0}", "Sigma" => "\u{3a3}", "Upsilon" => "\u{3a5}",
+        "Phi" => "\u{3a6}", "Psi" => "\u{3a8}", "Omega" => "\u{3a9}",
+        "times" => "\u{d7}", "cdot" => "\u{22c5}", "pm" => "\u{b1}", "div" => "\u{f7}",
+        "infty" => "\u{221e}", "leq" | "le" => "\u{2264}", "geq" | "ge" => "\u{2265}",
+        "neq" | "ne" => "\u{2260}", "approx" => "\u{2248}", "sim" => "\u{223c}",
+        "propto" => "\u{221d}", "partial" => "\u{2202}", "nabla" => "\u{2207}",
+        "sum" => "\u{2211}", "prod" => "\u{220f}", "int" => "\u{222b}", "sqrt" => "\u{221a}",
+        "in" => "\u{2208}", "to" | "rightarrow" => "\u{2192}", "leftarrow" => "\u{2190}",
+        "uparrow" => "\u{2191}", "downarrow" => "\u{2193}", "degree" | "circ" => "\u{b0}",
+        "prime" => "\u{2032}", "ldots" | "dots" => "\u{2026}", "minus" => "\u{2212}",
+        "quad" => "\u{2003}", "AA" => "\u{c5}", "hbar" => "\u{127}", "ell" => "l",
+        "sin" | "cos" | "tan" | "exp" | "log" | "ln" | "lg" | "max" | "min" | "lim" | "det" | "arg" | "sinh" | "cosh" | "tanh" => name,
+        _ => none,
+    }
+}
+
+/// How wide the runs are when set at `size` px; `cell > 0` measures in
+/// monospaced cells of that width instead, as a terminal shows them.
+pub(pkg) fn width(runs: List<Run>, size: f64, cell: f64 = 0.0) -> f64 {
+    if cell > 0.0 { return (plain(runs).chars().count() as f64) * cell; }
+    let w = 0.0;
+    for r in runs { w += font::width(r.text, size * r.scale); }
+    w
+}
+
+/// The runs as one line of plain text: superscripts and subscripts as
+/// Unicode script characters where they exist, else after `^` or `_`.
+///
+/// ```nabi
+/// use plot::text::{parse, plain};
+///
+/// assert(plain(parse("$10^{-3}$")) == "10\u{207b}\u{b3}");
+/// assert(plain(parse("$x_i$")) == "x\u{1d62}");
+/// ```
+pub fn plain(runs: List<Run>) -> str {
+    let out = StrBuf::new();
+    for r in runs {
+        if r.rise == 0.0 {
+            out.push_str(r.text);
+            continue;
+        }
+        let up = r.rise > 0.0;
+        let mapped = StrBuf::new();
+        let ok = true;
+        for c in r.text.chars() {
+            match script(c, up) {
+                s: char => mapped.push(s),
+                none => { ok = false; break; }
+            }
+        }
+        if ok { out.push_str(mapped.to_str()); } else { out.push_str((if up { "^" } else { "_" }) + r.text); }
+    }
+    out.to_str()
+}
+
+fn script(c: char, up: bool) -> char | none {
+    if up {
+        match c {
+            '0' => '\u{2070}', '1' => '\u{b9}', '2' => '\u{b2}', '3' => '\u{b3}',
+            '4' => '\u{2074}', '5' => '\u{2075}', '6' => '\u{2076}', '7' => '\u{2077}',
+            '8' => '\u{2078}', '9' => '\u{2079}', '+' => '\u{207a}', '-' | '\u{2212}' => '\u{207b}',
+            '=' => '\u{207c}', '(' => '\u{207d}', ')' => '\u{207e}', 'n' => '\u{207f}', 'i' => '\u{2071}',
+            _ => none,
+        }
+    } else {
+        match c {
+            '0' => '\u{2080}', '1' => '\u{2081}', '2' => '\u{2082}', '3' => '\u{2083}',
+            '4' => '\u{2084}', '5' => '\u{2085}', '6' => '\u{2086}', '7' => '\u{2087}',
+            '8' => '\u{2088}', '9' => '\u{2089}', '+' => '\u{208a}', '-' | '\u{2212}' => '\u{208b}',
+            '=' => '\u{208c}', '(' => '\u{208d}', ')' => '\u{208e}', 'a' => '\u{2090}', 'e' => '\u{2091}',
+            'o' => '\u{2092}', 'x' => '\u{2093}', 'i' => '\u{1d62}', 'j' => '\u{2c7c}', 'k' => '\u{2096}',
+            'n' => '\u{2099}', 't' => '\u{209c}',
+            _ => none,
+        }
+    }
+}

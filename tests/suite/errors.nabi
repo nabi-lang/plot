@@ -1,0 +1,46 @@
+// Errors: what each bad input reports.
+
+use pkg::{Figure, PlotError, Scale};
+
+fn message(r: Result<str, PlotError>) -> str {
+    match r {
+        Ok(_) => panic("expected an error"),
+        Err(e) => f"{e}",
+    }
+}
+
+#[test]
+fn errors_say_what_to_do() {
+    let e = message(Result::catching(|| try pkg::line([1, 2, 3], [1, 2]).svg()));
+    assert(e.contains("3 x values and 2 y values"));
+    let e = message(Result::catching(|| try pkg::line([1, 2], [1, 2]).color("nope").svg()));
+    assert(e.contains("\"nope\"") && e.contains("#rrggbb"));
+    let e = message(Result::catching(|| try pkg::line([1, 2], [1, 2]).log("x").xlim(-1.0, 10.0).svg()));
+    assert(e.contains("positive limit"));
+    let e = message(Result::catching(|| try pkg::line([1, 2], [1, 2]).xlim(5.0, 1.0).svg()));
+    assert(e.contains("reversed") && e.contains("invert_x"));
+    let ragged: List<List<f64>> = [[1.0, 2.0], [3.0]];
+    let e = message(Result::catching(|| try pkg::heatmap(ragged).svg()));
+    assert(e.contains("same number of values"));
+    let empty: List<List<f64>> = [];
+    let e = message(Result::catching(|| try pkg::heatmap(empty).svg()));
+    assert(e.contains("no values"));
+    let e = message(Result::catching(|| try pkg::boxplot([[1.0], []]).svg()));
+    assert(e.contains("boxplot group 1"));
+    let e = message(Result::catching(|| try pkg::scatter([1, 2], [1, 2]).sizes([1.0]).svg()));
+    assert(e.contains("scatter sizes"));
+    let e = message(Result::catching(|| {
+        try pkg::line([0, 1], [0, 1]).save("plot.jpg");
+        ""
+    }));
+    assert(e.contains(".svg or .png"));
+    let e = message(Result::catching(|| f"{(try pkg::line([0, 1], [0, 1]).png(scale: 0.0)).len()}"));
+    assert(e.contains("png scale"));
+    let e = message(Result::catching(|| try Figure::of(pkg::axes()).size(0.0, 10.0).svg()));
+    assert(e.contains("figure size"));
+    let e = message(Result::catching(|| try pkg::line([0, 1], [0, 1]).term(cols: 5, rows: 2)));
+    assert(e.contains("at least 10 columns"));
+    // A layer's error surfaces only when rendered: building never throws.
+    let ok = pkg::line([1, 2], [1]).xscale(Scale::Linear);
+    assert(ok.len() == 1);
+}

@@ -1,0 +1,97 @@
+// Writes the README's example images to assets/: `nabi run
+// tools/gallery` from the repository root.
+
+use std::env;
+use std::random::{Rng, Xoshiro256PlusPlus};
+use plot::{Bins, Colormap, Dash, StepAt, Theme};
+
+fn normal(g: Xoshiro256PlusPlus, n: usize, mu: f64, sigma: f64) -> List<f64> {
+    let r = g;
+    List::from_fn(n, [ref r] |_| r.normal(mu, sigma))
+}
+
+// `nabi run tools/gallery -- <dir>` also writes PNGs to <dir>.
+fn save(name: str, f: plot::Figure) {
+    let path = f"assets/{name}.svg";
+    try! f.save(path);
+    println(f"wrote {path}");
+    let args = env::args();
+    if args.len() > 1 {
+        let png = f"{args[1]}/{name}.png";
+        try! f.save(png);
+        println(f"wrote {png}");
+    }
+}
+
+let g = Xoshiro256PlusPlus::seed(7);
+
+// Lines, markers, a band and math in labels.
+let t = plot::linspace(0.0, 10.0, 200);
+let y: List<f64> = t.iter().map(|v| (-v / 4.0).exp() * (2.0 * v).sin()).collect();
+let env: List<f64> = t.iter().map(|v| (-v / 4.0).exp()).collect();
+let neg: List<f64> = env.iter().map(|v| -v).collect();
+let ts: List<f64> = plot::linspace(0.0, 10.0, 21);
+let obs: List<f64> = ts.iter().map(|v| (-v / 4.0).exp() * (2.0 * v).sin() + 0.08 * (3.7 * v).cos()).collect();
+let lines = plot::axes()
+    .fill_between(t, neg, env).label("envelope $\\pm e^{-t/\\tau}$").color("C4")
+    .line(t, y).label("$x(t)$").color("C0")
+    .scatter(ts, obs).label("samples").color("C1")
+    .xlabel("time $t$ [s]").ylabel("displacement [mm]")
+    .title("Damped oscillation, $\\tau = 4$ s");
+save("lines", lines.size_px(640.0, 360.0).figure());
+
+// Grouped and stacked bars, side by side.
+let years = ["2021", "2022", "2023", "2024"];
+let series = [("north", [3.1, 4.0, 4.6, 5.2]), ("south", [2.2, 2.9, 3.1, 4.4]), ("east", [1.5, 1.7, 2.6, 2.9])];
+let grouped = plot::axes().bars(years, series).ylabel("revenue [M]").title("Grouped");
+let stacked = plot::axes().bars(years, series, stacked: true).title("Stacked").no_legend();
+save("bars", (grouped | stacked).size(720.0, 300.0));
+
+// Distributions: histogram, box plots, violins.
+let a = normal(g, 400, 0.0, 1.0);
+let b = normal(g, 400, 1.5, 0.6);
+let c = normal(g, 400, -1.0, 1.4);
+let hist = plot::axes().hist(a, Bins::Auto, density: true).label("a").hist(b, Bins::Auto, density: true).label("b").alpha(0.6).title("Histogram").ylabel("density");
+let boxes = plot::boxplot([a, b, c], ["a", "b", "c"]).title("Box plot");
+let violins = plot::violin([a, b, c], ["a", "b", "c"]).title("Violin");
+save("distributions", plot::Figure::grid([hist, boxes, violins], 3).size(900.0, 280.0));
+
+// Heatmap with a colorbar, and filled contours with lines on top.
+let n = 40;
+let z: List<List<f64>> = List::from_fn(n, |i| List::from_fn(n, |j| {
+    let x = (j as f64) / 6.5 - 3.0;
+    let y = (i as f64) / 6.5 - 3.0;
+    (x * x + y * y).sqrt().sin() * (-(x * x + y * y) / 8.0).exp() + 0.3 * (x - y).cos()
+}));
+let heat = plot::axes().heatmap(z, extent: (-3.0, 3.0, -3.0, 3.0)).cmap(Colormap::magma()).colorbar("z").aspect(1.0).title("heatmap, magma");
+let cont = plot::axes()
+    .contourf(z, extent: (-3.0, 3.0, -3.0, 3.0)).cmap(Colormap::viridis())
+    .contour(z, extent: (-3.0, 3.0, -3.0, 3.0)).color("#ffffff").alpha(0.6).width(0.75)
+    .colorbar().aspect(1.0).title("contourf + contour");
+save("fields", (heat | cont).size(760.0, 340.0));
+
+// Log axes, a date axis, a twin axis.
+let k: List<f64> = plot::linspace(0.0, 4.0, 40).iter().map(|v| 10.0 ** v).collect();
+let loglog = plot::axes()
+    .line(k, k.iter().map(|v| v ** -1.5).collect::<List<f64>>()).label("$k^{-3/2}$")
+    .line(k, k.iter().map(|v| 0.3 * v ** -0.5).collect::<List<f64>>()).label("$0.3\\,k^{-1/2}$").dash(Dash::Dashed)
+    .log("xy").minor().xlabel("wavenumber $k$").ylabel("power").title("Log-log");
+let days: List<f64> = List::from_fn(120, |i| plot::date(2024, 1, 1) + (i as f64) * 86400.0 * 3.0);
+let temp: List<f64> = List::from_fn(120, |i| 8.0 + 12.0 * ((i as f64) / 120.0 * 3.1).sin());
+let rain: List<f64> = List::from_fn(120, |i| (55.0 + 35.0 * ((i as f64) * 0.13).sin() + 15.0 * ((i as f64) * 0.71).cos()).max(0.0));
+let twin = plot::axes()
+    .line(days, temp).label("temperature").ylabel("temperature [\u{b0}C]")
+    .right().step(days, rain, StepAt::Mid).label("rain").color("C2").alpha(0.7).ylabel("rain [mm]")
+    .dates().title("Dates and a twin axis");
+save("axes", (loglog | twin).size(820.0, 320.0));
+
+// The dark theme, as the docs site's dark mode.
+let xs = normal(g, 300, 0.0, 1.0);
+let ys: List<f64> = List::from_fn(300, |i| xs[i] * 0.8 + 0.4 * (i as f64 * 0.37).sin());
+let dark = plot::axes()
+    .scatter(xs, ys).values(ys).cmap(Colormap::plasma()).size(5.0).colorbar("y")
+    .hline(0.0).dash(Dash::Dotted)
+    .annotate("outlier", xs[0], ys[0], xs[0] + 0.8, ys[0] + 1.2)
+    .xlabel("x").ylabel("y").title("Dark theme")
+    .theme(Theme::dark());
+save("dark", dark.size_px(520.0, 340.0).figure());

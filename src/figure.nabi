@@ -1,0 +1,299 @@
+//! Figures: a layout tree of Axes (rows and columns, nested), a size, a
+//! theme and a title, rendered to SVG, PNG or the terminal. `|` puts
+//! panels side by side and `/` stacks them, as R's patchwork does.
+
+use pkg::layout;
+use pkg::layout::Mode;
+use pkg::png;
+use pkg::raster;
+use pkg::svg;
+use pkg::term;
+use pkg::{Axes, PlotError, Theme};
+use core::encoding::base64;
+use std::fs;
+
+/// A node of the layout tree.
+///
+/// ```nabi
+/// let f = plot::line([0, 1], [0, 1]) / plot::line([0, 1], [1, 0]);
+/// assert(f.panels().len() == 2);
+/// ```
+#[derive(Clone, Debug)]
+pub enum Node {
+    Leaf(Axes),
+    Row(List<Node>),
+    Col(List<Node>),
+    /// An empty cell.
+    Blank,
+}
+
+/// A figure: panels laid out in rows and columns, rendered as one
+/// image.
+///
+/// ```nabi
+/// let pair = plot::line([0, 1, 2], [0, 1, 4]) | plot::scatter([0, 1, 2], [4, 1, 0]);
+/// let fig = pair.title("Two panels").size(800.0, 300.0);
+/// let svg = try fig.svg();
+/// assert(svg.contains("width=\"800\"") && svg.contains(">Two panels<"));
+/// ```
+#[derive(Clone, Debug)]
+pub struct Figure {
+    pub(pkg) root: Node;
+    pub(pkg) width: f64;
+    pub(pkg) height: f64;
+    pub(pkg) title: str;
+    pub(pkg) theme: Theme | none;
+}
+
+impl Figure {
+    /// A one-panel figure of `ax`, with its size and theme if it set
+    /// them.
+    ///
+    /// ```nabi
+    /// assert(plot::Figure::of(plot::axes().size_px(100.0, 80.0)).panels().len() == 1);
+    /// ```
+    pub fn of(ax: Axes) -> Figure {
+        let (w, h) = ax.size ?? (640.0, 420.0);
+        Figure { root: Node::Leaf(ax), width: w, height: h, title: "", theme: ax.theme }
+    }
+
+    /// Panels in a grid of `cols` columns, filled row by row.
+    ///
+    /// ```nabi
+    /// let panels = [plot::line([0, 1], [0, 1]), plot::line([0, 1], [1, 0]), plot::hist([1.0, 2.0, 2.0])];
+    /// let fig = plot::Figure::grid(panels, 2);
+    /// assert((try fig.svg()).count("clipPath id") == 3);
+    /// ```
+    pub fn grid(panels: List<Axes>, cols: usize) -> Figure {
+        let c = cols.max(1);
+        let rows: List<Node> = [];
+        let i = 0usize;
+        while i < panels.len() {
+            let row: List<Node> = [];
+            for j in 0..c {
+                row.push(if i + j < panels.len() { Node::Leaf(panels[i + j]) } else { Node::Blank });
+            }
+            rows.push(Node::Row(row));
+            i += c;
+        }
+        let n = rows.len().max(1) as f64;
+        let theme = if panels.is_empty() { none } else { panels[0].theme };
+        Figure { root: Node::Col(rows), width: 360.0 * (c as f64), height: 280.0 * n, title: "", theme }
+    }
+
+    /// The size in px (CSS pixels; PNG output multiplies by its scale).
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).figure().size(200.0, 100.0).svg()).contains("height=\"100\""));
+    /// ```
+    pub fn size(self, w: f64, h: f64) -> Figure {
+        let f = self;
+        f.width = w;
+        f.height = h;
+        f
+    }
+
+    /// A title above all panels.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).figure().title("All").svg()).contains(">All<"));
+    /// ```
+    pub fn title(self, s: str) -> Figure {
+        let f = self;
+        f.title = s;
+        f
+    }
+
+    /// The theme for every panel.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).figure().theme(plot::Theme::dark()).svg()).contains("#141114"));
+    /// ```
+    pub fn theme(self, t: Theme) -> Figure {
+        let f = self;
+        f.theme = t;
+        f
+    }
+
+    /// The panels in layout order.
+    ///
+    /// ```nabi
+    /// let a = plot::line([0, 1], [0, 1]);
+    /// assert((a | a | a).panels().len() == 3);
+    /// ```
+    pub fn panels(self) -> List<Axes> {
+        let out: List<Axes> = [];
+        collect(self.root, out);
+        out
+    }
+
+    /// The drawing primitives for a canvas of the figure's size.
+    ///
+    /// ```nabi
+    /// let s = try plot::line([0, 1], [0, 1]).figure().scene();
+    /// assert(s.width == 640.0 && s.items.len() > 3);
+    /// ```
+    pub fn scene(self) throws (PlotError) -> pkg::scene::Scene { try layout::scene(self, Mode::Vector) }
+
+    /// The SVG document: exact text, deterministic bytes.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).figure().svg()).starts_with("<svg"));
+    /// ```
+    pub fn svg(self) throws (PlotError) -> str { svg::write(try self.scene()) }
+
+    /// A PNG image, `scale` device pixels per px (2 for HiDPI).
+    ///
+    /// ```nabi
+    /// let bytes = try plot::line([0, 1], [0, 1]).size_px(64.0, 48.0).png(scale: 2.0);
+    /// assert(bytes[1] == 80 && bytes.len() > 100);  // "PNG"
+    /// ```
+    pub fn png(self, scale: f64 = 1.0) throws (PlotError) -> List<u8> {
+        if !(scale > 0.0 && scale <= 16.0) { throw PlotError::Argument { what: f"png scale {scale}; pass a value above 0 and at most 16" }; }
+        let s = try layout::scene(self, Mode::Raster);
+        let img = raster::render(s, scale);
+        png::encode(img.rgba, img.width, img.height)
+    }
+
+    /// The figure drawn with Unicode braille and block characters in
+    /// `cols` x `rows` cells; `color` adds 24-bit ANSI colours.
+    ///
+    /// ```nabi
+    /// let t = try plot::line([0, 1, 2], [0, 1, 0]).term(cols: 40, rows: 12);
+    /// assert(t.lines().count() == 12);
+    /// ```
+    pub fn term(self, cols: usize = 80, rows: usize = 24, color: bool = false) throws (PlotError) -> str {
+        if cols < 10 || rows < 4 { throw PlotError::Argument { what: f"term size {cols} x {rows}; pass at least 10 columns and 4 rows" }; }
+        let f = self.size((cols as f64) * term::CELL_W, (rows as f64) * term::CELL_H);
+        let s = try layout::scene(f, Mode::Cells);
+        term::render(s, cols, rows, color)
+    }
+
+    /// Writes the figure to `path`: SVG for `.svg`, PNG for `.png`.
+    ///
+    /// ```nabi
+    /// use std::{env, fs, process};
+    ///
+    /// let path = env::temp_dir() / f"plot_fig_{process::id()}.png";
+    /// try plot::line([0, 1], [0, 1]).figure().size(60.0, 40.0).save(f"{path}");
+    /// assert((try fs::read(path))[1] == 80);
+    /// try fs::remove_file(path);
+    /// ```
+    pub fn save(self, path: str) throws (PlotError) {
+        let lower = path.to_lowercase();
+        if lower.ends_with(".svg") {
+            let s = try self.svg();
+            try fs::write(path, s) catch e { throw PlotError::Io { what: f"{path}: {e}" }; };
+        } else if lower.ends_with(".png") {
+            let b = try self.png();
+            try fs::write(path, b) catch e { throw PlotError::Io { what: f"{path}: {e}" }; };
+        } else {
+            throw PlotError::Argument { what: f"\"{path}\" has no .svg or .png extension; name the file `plot.svg` or `plot.png`" };
+        }
+    }
+
+    /// Prints the terminal rendering, 80 x 24.
+    ///
+    /// ```nabi
+    /// try plot::line([0, 1], [0, 1]).figure().show();
+    /// ```
+    pub fn show(self) throws (PlotError) { println(try self.term()); }
+
+    /// This figure (so a figure and an Axes take the same calls).
+    ///
+    /// ```nabi
+    /// let f = plot::line([0, 1], [0, 1]).figure();
+    /// assert(f.figure().panels().len() == 1);
+    /// ```
+    pub fn figure(self) -> Figure { self }
+}
+
+fn collect(n: Node, out: List<Axes>) {
+    match n {
+        Leaf(a) => out.push(a),
+        Row(xs) => for x in xs { collect(x, out); },
+        Col(xs) => for x in xs { collect(x, out); },
+        Blank => {}
+    }
+}
+
+// `a | b | c` makes one row of three; `(a | b) / c` a row above c.
+fn join(a: Figure, b: Node, row: bool) -> Figure {
+    let f = a;
+    let items: List<Node> = match a.root {
+        Row(xs) if row => xs.clone(),
+        Col(xs) if !row => xs.clone(),
+        _ => [a.root],
+    };
+    items.push(b);
+    let n = items.len() as f64;
+    f.root = if row { Node::Row(items) } else { Node::Col(items) };
+    if row { f.width = f.width.max(320.0 * n); } else { f.height = f.height.max(240.0 * n); }
+    f
+}
+
+impl ops::BitOr<Axes> for Axes {
+    type Output = Figure;
+    fn bitor(self, o: Axes) -> Figure { join(Figure::of(self), Node::Leaf(o), true) }
+}
+
+impl ops::BitOr<Figure> for Axes {
+    type Output = Figure;
+    fn bitor(self, o: Figure) -> Figure { join(Figure::of(self), o.root, true) }
+}
+
+/// In a notebook: the SVG, a PNG for front ends that show only bitmaps,
+/// and the terminal rendering as text. A figure that cannot be drawn
+/// shows its error.
+///
+/// ```nabi
+/// let b = plot::line([0, 1], [0, 1]).figure().mime_bundle();
+/// assert(b["image/svg+xml"].starts_with("<svg") && b.contains_key("image/png"));
+/// ```
+impl RichDisplay for Figure {
+    fn mime_bundle(self) -> Dict<str, str> {
+        let b: Dict<str, str> = Dict::new();
+        let svg = try self.svg() catch e {
+            b["text/plain"] = f"{e}";
+            return b;
+        };
+        b["image/svg+xml"] = svg;
+        if let png: List<u8> = try? self.png() {
+            b["image/png"] = base64::encode(png);
+        }
+        if let text: str = try? self.term() {
+            b["text/plain"] = text;
+        }
+        b
+    }
+}
+
+impl ops::BitOr<Axes> for Figure {
+    type Output = Figure;
+    fn bitor(self, o: Axes) -> Figure { join(self, Node::Leaf(o), true) }
+}
+
+impl ops::BitOr<Figure> for Figure {
+    type Output = Figure;
+    fn bitor(self, o: Figure) -> Figure { join(self, o.root, true) }
+}
+
+impl ops::Div<Axes> for Axes {
+    type Output = Figure;
+    fn div(self, o: Axes) -> Figure { join(Figure::of(self), Node::Leaf(o), false) }
+}
+
+impl ops::Div<Figure> for Axes {
+    type Output = Figure;
+    fn div(self, o: Figure) -> Figure { join(Figure::of(self), o.root, false) }
+}
+
+impl ops::Div<Axes> for Figure {
+    type Output = Figure;
+    fn div(self, o: Axes) -> Figure { join(self, Node::Leaf(o), false) }
+}
+
+impl ops::Div<Figure> for Figure {
+    type Output = Figure;
+    fn div(self, o: Figure) -> Figure { join(self, o.root, false) }
+}

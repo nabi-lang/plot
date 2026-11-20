@@ -1,0 +1,61 @@
+// Rendering throughput: SVG of a long line, PNG of a dense scatter, a
+// large heatmap, and the PNG encoder on its own.
+
+use pkg::Colormap;
+use pkg::png;
+use core::bench::Bench;
+use core::hint::black_box;
+use std::random::{Rng, Xoshiro256PlusPlus};
+
+fn noise(n: usize, seed: u64) -> List<f64> {
+    let g = Xoshiro256PlusPlus::seed(seed);
+    List::from_fn(n, [ref g] |_| g.normal(0.0, 1.0))
+}
+
+// A random walk of 1e5 points to SVG.
+#[bench]
+fn svg_line_100k(b: Bench) {
+    let n = 100000;
+    let steps = noise(n, 1);
+    let y: List<f64> = List::filled(n, 0.0);
+    for i in 1..n { y[i] = y[i - 1] + steps[i]; }
+    let x: List<f64> = List::from_fn(n, |i| i as f64);
+    b.set_items(n as i64);
+    b.iter(|| try! pkg::line(black_box(x), black_box(y)).svg());
+}
+
+// 1e6 markers rasterized to PNG at 800 x 600.
+#[bench]
+fn png_scatter_1m(b: Bench) {
+    let n = 1000000;
+    let x = noise(n, 2);
+    let y = noise(n, 3);
+    b.set_items(n as i64);
+    b.iter(|| try! pkg::scatter(black_box(x), black_box(y)).size(2.0).alpha(0.3).size_px(800.0, 600.0).png());
+}
+
+// A 1000 x 1000 grid as a heatmap to SVG (embedded PNG) and to PNG.
+#[bench]
+fn svg_heatmap_1000(b: Bench) {
+    let n = 1000;
+    let z: List<List<f64>> = List::from_fn(n, |i| List::from_fn(n, |j| ((i as f64) * 0.01).sin() * ((j as f64) * 0.013).cos()));
+    b.set_items((n * n) as i64);
+    b.iter(|| try! pkg::heatmap(black_box(z)).cmap(Colormap::viridis()).colorbar("").svg());
+}
+
+#[bench]
+fn png_heatmap_1000(b: Bench) {
+    let n = 1000;
+    let z: List<List<f64>> = List::from_fn(n, |i| List::from_fn(n, |j| ((i as f64) * 0.01).sin() * ((j as f64) * 0.013).cos()));
+    b.set_items((n * n) as i64);
+    b.iter(|| try! pkg::heatmap(black_box(z)).size_px(800.0, 700.0).png());
+}
+
+// The encoder alone: 1000 x 1000 RGBA of smooth data.
+#[bench]
+fn png_encode_1mpx(b: Bench) {
+    let n = 1000;
+    let px: List<u8> = List::from_fn(n * n * 4, |i| if i % 4 == 3 { 255 } else { ((i / 4 % n + i / 4 / n) / 8 % 256) as u8 });
+    b.set_items((n * n) as i64);
+    b.iter(|| png::encode(black_box(px), n, n));
+}

@@ -1,0 +1,71 @@
+// Contours: rings, band areas, saddles.
+
+use pkg::contour::{Pieces, band, lines};
+use pkg::tests::suite::close;
+
+fn area(p: Pieces) -> f64 {
+    let a = 0.0;
+    for k in 0..p.len() {
+        let s = p.starts[k];
+        let e = p.starts[k + 1];
+        for i in s..e {
+            let j = if i + 1 == e { s } else { i + 1 };
+            a += p.xy[2 * i] * p.xy[2 * j + 1] - p.xy[2 * j] * p.xy[2 * i + 1];
+        }
+    }
+    a / 2.0
+}
+
+#[test]
+fn rings_close() {
+    // A cone: every level is one closed ring, first point = last.
+    let n = 21;
+    let z: List<f64> = List::from_fn(n * n, |k| {
+        let (r, c) = ((k / n) as f64 - 10.0, (k % n) as f64 - 10.0);
+        (r * r + c * c).sqrt()
+    });
+    for level in [2.5, 5.5, 8.5] {
+        let p = lines(z, n, n, level);
+        assert(p.len() == 1);
+        let (s, e) = (p.starts[0], p.starts[1]);
+        assert(p.xy[2 * s] == p.xy[2 * (e - 1)] && p.xy[2 * s + 1] == p.xy[2 * (e - 1) + 1]);
+        // The ring's points lie near radius `level`.
+        for i in s..e {
+            let (x, y) = (p.xy[2 * i] - 10.0, p.xy[2 * i + 1] - 10.0);
+            let r = (x * x + y * y).sqrt();
+            assert((r - level).abs() < 0.08);
+        }
+    }
+    // An open line across a ramp.
+    let ramp: List<f64> = List::from_fn(16, |k| (k % 4) as f64);
+    let p = lines(ramp, 4, 4, 1.5);
+    assert(p.len() == 1 && p.starts[1] >= 4);
+    for i in 0..p.starts[1] { close(p.xy[2 * i], 1.5, 1e-12, "ramp line x"); }
+}
+
+#[test]
+fn bands_tile_the_grid() {
+    let n = 15;
+    let z: List<f64> = List::from_fn(n * n, |k| {
+        let (r, c) = ((k / n) as f64 / 3.0, (k % n) as f64 / 3.0);
+        r.sin() * c.cos()
+    });
+    let levels = [-1.0, -0.5, 0.0, 0.25, 0.5, 1.0];
+    let total = 0.0;
+    for i in 0..levels.len() - 1 {
+        let b = band(z, n, n, levels[i], levels[i + 1], i + 2 == levels.len());
+        println(f"band {i}: {area(b)} pieces {b.len()}");
+        total += area(b).abs();
+    }
+    let full = ((n - 1) * (n - 1)) as f64;
+    if !((total - full).abs() < 1e-6 * full) { panic(f"bands cover {total}, grid {full}"); }
+}
+
+#[test]
+fn saddle_and_nan() {
+    let p = lines([0.0, 1.0, 1.0, 0.0], 2, 2, 0.5);
+    assert(p.len() == 2);
+    let q = lines([f64::NAN, 1.0, 1.0, 0.0], 2, 2, 0.5);
+    assert(q.len() == 0);
+    assert(lines([1.0], 1, 1, 0.5).len() == 0);
+}

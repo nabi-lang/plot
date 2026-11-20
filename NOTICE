@@ -1,0 +1,18 @@
+plot includes data derived from the following works.
+
+Geist (Vercel, with basement.studio) and Pretendard (Kil Hyung-jin)
+  src/font/glyphs.nabi holds glyph outlines and advances of Geist Regular
+  and, for Greek and some mathematical symbols, Pretendard, written by
+  tools/font.py. Both fonts are under the SIL Open Font License 1.1; the
+  license texts are in assets/fonts/. The subset is not named after either
+  font.
+
+Colormaps (src/colormap/tables.nabi, written by tools/colormaps.py)
+  viridis, magma, inferno and plasma: Nathaniel J. Smith, Stefan van der
+  Walt and (viridis) Eric Firing, released under CC0 1.0.
+  cividis: Jamie R. Nunez, Christopher R. Anderton and Ryan S. Renslow,
+  "Optimizing colormaps with consideration for color vision deficiency to
+  enable accurate interpretation of scientific data", PLOS ONE 13(7),
+  2018; the table as matplotlib ships it.
+  coolwarm: the control points of Kenneth Moreland, "Diverging Color Maps
+  for Scientific Visualization", 2009.

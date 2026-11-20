@@ -1,0 +1,248 @@
+//! Tick label formatters. Labels may hold `$..$` math markup (powers of
+//! ten as `$10^{3}$`), which the text layout sets as superscripts. A
+//! minus sign is U+2212, as in typeset mathematics.
+
+use pkg::Scale;
+use pkg::calendar;
+use pkg::ticks::step_of;
+
+/// How tick values become labels.
+///
+/// ```nabi
+/// use plot::Format;
+/// use plot::format::label;
+///
+/// assert(label(1500.0, Format::Si) == "1.5k");
+/// assert(label(0.25, Format::Percent) == "25%");
+/// assert(label(-2.5, Format::Fixed(2)) == "\u{2212}2.50");
+/// ```
+pub enum Format {
+    /// As many decimals as the tick step needs; a shared `x10^k` at the
+    /// end of the axis for values from a million up or below 1e-3; powers
+    /// of the base on log axes; calendar labels on date axes.
+    Auto,
+    /// This many decimals.
+    Fixed(usize),
+    /// Each label as `m x 10^k`.
+    Sci,
+    /// SI prefixes: `1.5k`, `20M`, `500µ`.
+    Si,
+    /// The value times 100 with `%`.
+    Percent,
+    /// Your own function of the value.
+    Custom(fn(f64) -> str),
+}
+
+impl Debug for Format {
+    fn fmt(self, ref f: Formatter) throws (FmtError) {
+        let s = match self {
+            Auto => "Auto",
+            Fixed(d) => f"Fixed({d})",
+            Sci => "Sci",
+            Si => "Si",
+            Percent => "Percent",
+            Custom(_) => "Custom(..)",
+        };
+        try f.write_str(s)
+    }
+}
+
+// A function value is not `Clone`; the enum copies as a value.
+impl Clone for Format {
+    fn clone(self) -> Format { self }
+}
+
+/// One label for `v` with `fmt`, without the context of the other ticks
+/// (`Auto` uses the shortest exact form).
+///
+/// ```nabi
+/// assert(plot::format::label(0.5, plot::Format::Auto) == "0.5");
+/// ```
+pub fn label(v: f64, fmt: Format) -> str {
+    match fmt {
+        Auto => minus(shortest(v)),
+        Fixed(d) => minus(fixed(v, d)),
+        Sci => sci(v, 3),
+        Si => si(v, 3),
+        Percent => minus(shortest_digits(v * 100.0, 10)) + "%",
+        Custom(f) => f(v),
+    }
+}
+
+/// Labels for a run of ticks on `scale`, and the offset text shown at
+/// the end of the axis (`""` for none).
+///
+/// ```nabi
+/// use plot::{Format, Scale};
+/// use plot::format::labels;
+///
+/// let (l, off) = labels([0.0, 0.5, 1.0], Scale::Linear, Format::Auto);
+/// assert(l == ["0.0", "0.5", "1.0"] && off == "");
+/// let (l, off) = labels([0.0, 2e6, 4e6], Scale::Linear, Format::Auto);
+/// assert(l == ["0", "2", "4"] && off == "$\\times10^{6}$");
+/// let (l, _) = labels([1.0, 10.0, 100.0], Scale::Log(10.0), Format::Auto);
+/// assert(l[2] == "$10^{2}$");
+/// ```
+pub fn labels(ticks: List<f64>, scale: Scale, fmt: Format) -> (List<str>, str) {
+    match fmt {
+        Auto => {}
+        Fixed(d) => return (ticks.iter().map(|v| minus(fixed(v, d))).collect(), ""),
+        Sci => {
+            let d = sci_digits(ticks);
+            return (ticks.iter().map(|v| sci(v, d)).collect(), "");
+        }
+        Si => {
+            let d = si_digits(ticks);
+            return (ticks.iter().map(|v| si(v, d)).collect(), "");
+        }
+        Percent => {
+            let d = decimals(step_of(ticks) * 100.0, ticks.iter().map(|v| v * 100.0).collect());
+            return (ticks.iter().map(|v| minus(fixed(v * 100.0, d)) + "%").collect(), "");
+        }
+        Custom(f) => return (ticks.iter().map(|v| f(v)).collect(), ""),
+    }
+    match scale {
+        Log(base) => (ticks.iter().map(|v| power(v, base)).collect(), ""),
+        Symlog { base, .. } => (ticks.iter().map(|v| if v == 0.0 { "0" } else if v < 0.0 { "$\u{2212}" + power(-v, base).trim_start_matches("$") } else { power(v, base) }).collect(), ""),
+        Date => {
+            let u = calendar::unit_of(ticks);
+            (ticks.iter().map(|v| calendar::label(v, u)).collect(), "")
+        }
+        Linear => linear(ticks),
+    }
+}
+
+fn linear(ticks: List<f64>) -> (List<str>, str) {
+    let big = ticks.iter().fold(0.0, |a, v| a.max(v.abs()));
+    let step = step_of(ticks);
+    if big >= 1e6 || (big > 0.0 && big < 1e-3) {
+        let e = big.log10().floor();
+        let p = 10.0 ** e;
+        let scaled: List<f64> = ticks.iter().map(|v| v / p).collect();
+        let d = decimals(step / p, scaled);
+        return (scaled.iter().map(|v| minus(fixed(v, d))).collect(), f"$\\times10^{{{minus(fixed(e, 0))}}}$");
+    }
+    let d = decimals(step, ticks);
+    (ticks.iter().map(|v| minus(fixed(v, d))).collect(), "")
+}
+
+// Fewest decimals that tell every tick apart exactly enough: those of
+// the step, checked against each value.
+fn decimals(step: f64, ticks: List<f64>) -> usize {
+    for d in 0..13 {
+        let p = 10.0 ** (d as f64);
+        let ok = true;
+        if step > 0.0 && ((step * p) - (step * p).round()).abs() > 1e-6 * (step * p).max(1.0) { ok = false; }
+        for v in ticks {
+            if ((v * p) - (v * p).round()).abs() > 1e-6 * (v.abs() * p).max(1.0) { ok = false; }
+        }
+        if ok { return d; }
+    }
+    12
+}
+
+fn power(v: f64, base: f64) -> str {
+    let e = v.ln() / base.ln();
+    let r = e.round();
+    if (e - r).abs() < 1e-9 {
+        let b = if base == f64::E { "e" } else { shortest(base) };
+        return f"${b}^{{{minus(fixed(r, 0))}}}$";
+    }
+    minus(shortest(v))
+}
+
+/// `v` with `d` decimals, rounded half away from zero; plain ASCII
+/// minus.
+///
+/// ```nabi
+/// assert(plot::format::fixed(2.345, 2) == "2.35");
+/// assert(plot::format::fixed(-0.004, 2) == "0.00");
+/// assert(plot::format::fixed(1e20, 0) == "100000000000000000000");
+/// ```
+pub fn fixed(v: f64, d: usize) -> str {
+    if v != v { return "NaN"; }
+    if v.is_infinite() { return if v > 0.0 { "inf" } else { "-inf" }; }
+    let p = 10.0 ** (d as f64);
+    let r = (v.abs() * p).round();
+    if r >= 9.0e15 {
+        // Beyond exact integers: print the integer part digit by digit.
+        let s = f"{(v.abs()).round():.0}";
+        return if v < 0.0 { "-" + s } else { s };
+    }
+    let n = r as u64;
+    let digits = f"{n}";
+    let s = if d == 0 {
+        digits
+    } else {
+        let pad = if digits.len() <= d { "0".repeat(d + 1 - digits.len()) + digits } else { digits };
+        let k = pad.len() - d;
+        pad[0:k] + "." + pad[k:]
+    };
+    if v < 0.0 && n != 0 { "-" + s } else { s }
+}
+
+// Shortest decimal that reads back as `v` to 1e-12 relative, at most 12
+// decimals.
+fn shortest(v: f64) -> str { shortest_digits(v, 12) }
+
+fn shortest_digits(v: f64, max: usize) -> str {
+    if v == 0.0 { return "0"; }
+    for d in 0..max + 1 {
+        let p = 10.0 ** (d as f64);
+        if ((v * p).round() - v * p).abs() <= 1e-9 * (v.abs() * p).max(1e-300) { return fixed(v, d); }
+    }
+    fixed(v, max)
+}
+
+fn minus(s: str) -> str {
+    match s.strip_prefix("-") {
+        rest: str => "\u{2212}" + rest,
+        none => s,
+    }
+}
+
+fn sci_digits(ticks: List<f64>) -> usize {
+    let d = 0usize;
+    for v in ticks {
+        if v == 0.0 { continue; }
+        let e = v.abs().log10().floor();
+        let m = v / 10.0 ** e;
+        d = d.max(decimals(0.0, [m]));
+    }
+    d.min(6)
+}
+
+fn sci(v: f64, d: usize) -> str {
+    if v == 0.0 { return "0"; }
+    let e = v.abs().log10().floor();
+    let m = v / 10.0 ** e;
+    if m.abs() >= 9.9999999999 {
+        m /= 10.0;
+        e += 1.0;
+    }
+    let ms = minus(fixed(m, d));
+    f"${ms}\\times10^{{{minus(fixed(e, 0))}}}$"
+}
+
+const PREFIX: [str; 13] = ["a", "f", "p", "n", "\u{b5}", "m", "", "k", "M", "G", "T", "P", "E"];
+
+fn si_digits(ticks: List<f64>) -> usize {
+    let d = 0usize;
+    for v in ticks {
+        let (m, _) = si_split(v);
+        d = d.max(decimals(0.0, [m]));
+    }
+    d.min(6)
+}
+
+fn si_split(v: f64) -> (f64, usize) {
+    if v == 0.0 || !v.is_finite() { return (v, 6); }
+    let k = (v.abs().log10() / 3.0).floor().max(-6.0).min(6.0);
+    (v / 10.0 ** (3.0 * k), (k + 6.0) as usize)
+}
+
+fn si(v: f64, d: usize) -> str {
+    let (m, k) = si_split(v);
+    let digits = if d == 3 { shortest_digits(m, 3) } else { fixed(m, d) };
+    minus(digits) + PREFIX[k]
+}

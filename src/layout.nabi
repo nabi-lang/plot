@@ -1,0 +1,125 @@
+// Layout: a Figure becomes a Scene. The layout tree splits the canvas
+// into cells; each Axes lays out its axes, ticks and labels in its cell
+// (panel.nabi) and turns its layers into primitives (marks.nabi), then
+// legend and colorbar (keys.nabi).
+
+mod keys;
+mod marks;
+mod panel;
+
+use pkg::figure::Node;
+use pkg::font;
+use pkg::scene::{Anchor, Item, Rect, Scene};
+use pkg::term;
+use pkg::text;
+use pkg::{Color, Figure, PlotError, Theme};
+
+/// What the scene is for: vector or raster output share one layout;
+/// the terminal measures text in character cells.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(pkg) enum Mode { Vector, Raster, Cells }
+
+/// Vertical placement of a text item relative to its `y`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(pkg) enum VAlign { Baseline, Center, Top, Bottom }
+
+/// What every layout step shares.
+#[derive(Clone)]
+pub(pkg) struct Ctx {
+    pub(pkg) theme: Theme;
+    pub(pkg) mode: Mode;
+    pub(pkg) scene: Scene;
+}
+
+impl Ctx {
+    pub(pkg) fn cells(self) -> bool { self.mode == Mode::Cells }
+
+    /// Width of `s` at `size` px.
+    pub(pkg) fn width(self, s: str, size: f64) -> f64 {
+        if s.is_empty() { return 0.0; }
+        text::width(text::parse(s), size, if self.cells() { term::CELL_W } else { 0.0 })
+    }
+
+    /// The height a line of text at `size` takes.
+    pub(pkg) fn line_h(self, size: f64) -> f64 { if self.cells() { term::CELL_H } else { size * 1.25 } }
+
+    pub(pkg) fn push(self, it: Item) { self.scene.items.push(it); }
+
+    /// A clip rectangle's index.
+    pub(pkg) fn clip(self, r: Rect) -> usize {
+        self.scene.clips.push(r);
+        self.scene.clips.len() - 1
+    }
+
+    /// Places text; `rotate` is degrees counterclockwise.
+    pub(pkg) fn text(self, x: f64, y: f64, s: str, size: f64, color: Color, anchor: Anchor, v: VAlign, rotate: f64 = 0.0) {
+        if s.is_empty() { return; }
+        let runs = text::parse(s);
+        let shift = match v {
+            Baseline => 0.0,
+            Center => font::CAP * size / 2.0,
+            Top => font::CAP * size,
+            Bottom => -font::DESCENT * size * 0.6,
+        };
+        let (bx, by) = if rotate == 0.0 {
+            (x, y + shift)
+        } else {
+            let a = rotate.to_radians();
+            (x + shift * a.sin(), y + shift * a.cos())
+        };
+        self.push(Item::Text { x: bx, y: by, runs, size, color, anchor, rotate });
+    }
+}
+
+/// The scene of a figure.
+pub(pkg) fn scene(fig: Figure, mode: Mode) throws (PlotError) -> Scene {
+    if !(fig.width > 0.0 && fig.height > 0.0) || !fig.width.is_finite() || !fig.height.is_finite() {
+        throw PlotError::Argument { what: f"figure size {fig.width} x {fig.height}; pass positive sizes in px" };
+    }
+    let panels = fig.panels();
+    let first = if panels.is_empty() { none } else { panels[0].theme };
+    let theme = fig.theme ?? first ?? Theme::light();
+    if mode == Mode::Cells {
+        theme.font_size = 12.0;
+        theme.label_size = 12.0;
+        theme.title_size = 12.0;
+        theme.tick_length = 0.0;
+        theme.show_grid = false;
+    }
+    let s = Scene {
+        width: fig.width,
+        height: fig.height,
+        background: if mode == Mode::Cells { Color::clear() } else { theme.background },
+        font_family: theme.font_family,
+        clips: [Rect { x: 0.0, y: 0.0, w: fig.width, h: fig.height }],
+        items: [],
+    };
+    let c = Ctx { theme, mode, scene: s };
+    let top = 0.0;
+    if !fig.title.is_empty() {
+        let h = c.line_h(theme.title_size) * 1.3;
+        c.text(fig.width / 2.0, h / 2.0 + (if c.cells() { 0.0 } else { 4.0 }), fig.title, theme.title_size, theme.ink, Anchor::Middle, VAlign::Center);
+        top = h + (if c.cells() { 0.0 } else { 4.0 });
+    }
+    try place(c, fig.root, Rect { x: 0.0, y: top, w: fig.width, h: fig.height - top });
+    s
+}
+
+fn place(c: Ctx, n: Node, r: Rect) throws (PlotError) {
+    match n {
+        Leaf(a) => try panel::draw(c, a, r),
+        Row(xs) => {
+            let k = xs.len().max(1) as f64;
+            for i in 0..xs.len() {
+                try place(c, xs[i], Rect { x: r.x + r.w * (i as f64) / k, y: r.y, w: r.w / k, h: r.h });
+            }
+        }
+        Col(xs) => {
+            let k = xs.len().max(1) as f64;
+            for i in 0..xs.len() {
+                try place(c, xs[i], Rect { x: r.x, y: r.y + r.h * (i as f64) / k, w: r.w, h: r.h / k });
+            }
+        }
+        Blank => {}
+    }
+}

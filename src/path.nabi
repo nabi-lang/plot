@@ -1,0 +1,356 @@
+//! Vector paths in pixel coordinates (y down): moves, lines, quadratic
+//! and cubic Beziers, and closes. The SVG backend writes them as they
+//! are; the rasterizer and the terminal flatten them to polylines.
+
+pub(pkg) const MOVE: u8 = 0;
+pub(pkg) const LINE: u8 = 1;
+pub(pkg) const QUAD: u8 = 2;
+pub(pkg) const CUBIC: u8 = 3;
+pub(pkg) const CLOSE: u8 = 4;
+
+// Cubic arc constant: control distance for a quarter circle.
+const KAPPA: f64 = 0.5522847498307936;
+
+/// A path. Its point lists are shared by copies, so build it in one
+/// place and hand it over.
+///
+/// ```nabi
+/// use plot::Path;
+///
+/// let p = Path::new();
+/// p.move_to(0.0, 0.0);
+/// p.line_to(10.0, 0.0);
+/// p.close();
+/// assert(p.len() == 3);
+/// ```
+#[derive(Clone, Debug)]
+pub struct Path {
+    pub(pkg) verbs: List<u8>;
+    pub(pkg) pts: List<f64>;
+}
+
+/// A polyline with its subpath structure: subpath `i` is points
+/// `starts[i]..starts[i + 1]` of `xy` (x, y pairs), closed if
+/// `closed[i]`.
+pub(pkg) struct Flat {
+    pub(pkg) xy: List<f64>;
+    pub(pkg) starts: List<usize>;
+    pub(pkg) closed: List<bool>;
+}
+
+impl Path {
+    /// An empty path.
+    ///
+    /// ```nabi
+    /// assert(plot::Path::new().is_empty());
+    /// ```
+    pub fn new() -> Path { Path { verbs: [], pts: [] } }
+
+    /// The number of commands.
+    ///
+    /// ```nabi
+    /// assert(plot::Path::rect(0.0, 0.0, 1.0, 1.0).len() == 5);
+    /// ```
+    pub fn len(self) -> usize { self.verbs.len() }
+
+    /// Whether the path has no commands.
+    ///
+    /// ```nabi
+    /// assert(!plot::Path::circle(0.0, 0.0, 1.0).is_empty());
+    /// ```
+    pub fn is_empty(self) -> bool { self.verbs.is_empty() }
+
+    /// Starts a subpath at `(x, y)`.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::new();
+    /// p.move_to(1.0, 2.0);
+    /// assert(p.bounds() == (1.0, 2.0, 1.0, 2.0));
+    /// ```
+    pub fn move_to(self, x: f64, y: f64) {
+        self.verbs.push(MOVE);
+        self.pts.push(x);
+        self.pts.push(y);
+    }
+
+    /// A straight line to `(x, y)`.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::new();
+    /// p.move_to(0.0, 0.0);
+    /// p.line_to(3.0, 4.0);
+    /// assert(p.bounds().3 == 4.0);
+    /// ```
+    pub fn line_to(self, x: f64, y: f64) {
+        self.verbs.push(LINE);
+        self.pts.push(x);
+        self.pts.push(y);
+    }
+
+    /// A quadratic Bezier through control `(cx, cy)` to `(x, y)`.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::new();
+    /// p.move_to(0.0, 0.0);
+    /// p.quad_to(1.0, 2.0, 2.0, 0.0);
+    /// assert(p.len() == 2);
+    /// ```
+    pub fn quad_to(self, cx: f64, cy: f64, x: f64, y: f64) {
+        self.verbs.push(QUAD);
+        self.pts.push(cx);
+        self.pts.push(cy);
+        self.pts.push(x);
+        self.pts.push(y);
+    }
+
+    /// A cubic Bezier through controls `(c1x, c1y)`, `(c2x, c2y)` to
+    /// `(x, y)`.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::new();
+    /// p.move_to(0.0, 0.0);
+    /// p.cubic_to(0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
+    /// assert(p.len() == 2);
+    /// ```
+    pub fn cubic_to(self, c1x: f64, c1y: f64, c2x: f64, c2y: f64, x: f64, y: f64) {
+        self.verbs.push(CUBIC);
+        for v in [c1x, c1y, c2x, c2y, x, y] { self.pts.push(v); }
+    }
+
+    /// Closes the current subpath.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::new();
+    /// p.move_to(0.0, 0.0);
+    /// p.close();
+    /// assert(p.len() == 2);
+    /// ```
+    pub fn close(self) { self.verbs.push(CLOSE); }
+
+    /// An axis-aligned rectangle, clockwise on screen.
+    ///
+    /// ```nabi
+    /// assert(plot::Path::rect(1.0, 2.0, 3.0, 4.0).bounds() == (1.0, 2.0, 4.0, 6.0));
+    /// ```
+    pub fn rect(x: f64, y: f64, w: f64, h: f64) -> Path {
+        let p = Path::new();
+        p.add_rect(x, y, w, h);
+        p
+    }
+
+    /// Adds a rectangle subpath.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::new();
+    /// p.add_rect(0.0, 0.0, 1.0, 1.0);
+    /// p.add_rect(2.0, 0.0, 1.0, 1.0);
+    /// assert(p.len() == 10);
+    /// ```
+    pub fn add_rect(self, x: f64, y: f64, w: f64, h: f64) {
+        self.move_to(x, y);
+        self.line_to(x + w, y);
+        self.line_to(x + w, y + h);
+        self.line_to(x, y + h);
+        self.close();
+    }
+
+    /// A circle of four cubic arcs.
+    ///
+    /// ```nabi
+    /// assert(plot::Path::circle(0.0, 0.0, 2.0).bounds() == (-2.0, -2.0, 2.0, 2.0));
+    /// ```
+    pub fn circle(cx: f64, cy: f64, r: f64) -> Path {
+        let p = Path::new();
+        p.add_circle(cx, cy, r);
+        p
+    }
+
+    /// Adds a circle subpath, clockwise on screen.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::new();
+    /// p.add_circle(5.0, 5.0, 1.0);
+    /// assert(p.len() == 6);
+    /// ```
+    pub fn add_circle(self, cx: f64, cy: f64, r: f64) {
+        let k = r * KAPPA;
+        self.move_to(cx + r, cy);
+        self.cubic_to(cx + r, cy + k, cx + k, cy + r, cx, cy + r);
+        self.cubic_to(cx - k, cy + r, cx - r, cy + k, cx - r, cy);
+        self.cubic_to(cx - r, cy - k, cx - k, cy - r, cx, cy - r);
+        self.cubic_to(cx + k, cy - r, cx + r, cy - k, cx + r, cy);
+        self.close();
+    }
+
+    /// Adds a closed polygon through the points.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::new();
+    /// p.add_polygon([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    /// assert(p.len() == 4);
+    /// ```
+    pub fn add_polygon(self, xs: List<f64>, ys: List<f64>) {
+        let n = xs.len().min(ys.len());
+        if n == 0 { return; }
+        self.move_to(xs[0], ys[0]);
+        for i in 1..n { self.line_to(xs[i], ys[i]); }
+        self.close();
+    }
+
+    /// An open polyline through the points; a NaN breaks it into pieces.
+    ///
+    /// ```nabi
+    /// assert(plot::Path::polyline([0.0, 1.0, f64::NAN, 3.0], [0.0, 1.0, 2.0, 3.0]).len() == 3);
+    /// ```
+    pub fn polyline(xs: List<f64>, ys: List<f64>) -> Path {
+        let p = Path::new();
+        let n = xs.len().min(ys.len());
+        let pen = false;
+        for i in 0..n {
+            let x = xs[i];
+            let y = ys[i];
+            if x != x || y != y {
+                pen = false;
+                continue;
+            }
+            if pen { p.line_to(x, y); } else { p.move_to(x, y); }
+            pen = true;
+        }
+        p
+    }
+
+    /// The path moved by `(dx, dy)` after scaling by `(sx, sy)` and
+    /// rotating by `deg` degrees clockwise on screen around the origin.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::rect(0.0, 0.0, 1.0, 1.0).transformed(2.0, 2.0, 0.0, 10.0, 0.0);
+    /// assert(p.bounds() == (10.0, 0.0, 12.0, 2.0));
+    /// ```
+    pub fn transformed(self, sx: f64, sy: f64, deg: f64, dx: f64, dy: f64) -> Path {
+        let (s, c) = (deg.to_radians().sin(), deg.to_radians().cos());
+        let pts: List<f64> = List::with_capacity(self.pts.len());
+        let i = 0usize;
+        while i + 1 < self.pts.len() {
+            let x = self.pts[i] * sx;
+            let y = self.pts[i + 1] * sy;
+            pts.push(x * c - y * s + dx);
+            pts.push(x * s + y * c + dy);
+            i += 2;
+        }
+        Path { verbs: self.verbs.clone(), pts }
+    }
+
+    /// Appends every command of `o`.
+    ///
+    /// ```nabi
+    /// let p = plot::Path::rect(0.0, 0.0, 1.0, 1.0);
+    /// p.extend(plot::Path::circle(3.0, 3.0, 1.0));
+    /// assert(p.len() == 11);
+    /// ```
+    pub fn extend(self, o: Path) {
+        for v in o.verbs { self.verbs.push(v); }
+        for v in o.pts { self.pts.push(v); }
+    }
+
+    /// (min x, min y, max x, max y) of the points, controls included.
+    ///
+    /// ```nabi
+    /// assert(plot::Path::rect(-1.0, 0.0, 2.0, 1.0).bounds().0 == -1.0);
+    /// ```
+    pub fn bounds(self) -> (f64, f64, f64, f64) {
+        let x0 = f64::INFINITY;
+        let y0 = f64::INFINITY;
+        let x1 = f64::NEG_INFINITY;
+        let y1 = f64::NEG_INFINITY;
+        let i = 0usize;
+        while i + 1 < self.pts.len() {
+            let x = self.pts[i];
+            let y = self.pts[i + 1];
+            if x < x0 { x0 = x; }
+            if x > x1 { x1 = x; }
+            if y < y0 { y0 = y; }
+            if y > y1 { y1 = y; }
+            i += 2;
+        }
+        (x0, y0, x1, y1)
+    }
+
+    /// Curves flattened to lines no farther than `tol` px from the curve.
+    pub(pkg) fn flatten(self, tol: f64) -> Flat {
+        let xy: List<f64> = List::with_capacity(self.pts.len());
+        let starts: List<usize> = [];
+        let closed: List<bool> = [];
+        let p = 0usize;
+        let cx = 0.0;
+        let cy = 0.0;
+        let sx = 0.0;
+        let sy = 0.0;
+        let open = false;
+        for v in self.verbs {
+            if v == MOVE {
+                if open { closed.push(false); }
+                cx = self.pts[p];
+                cy = self.pts[p + 1];
+                sx = cx;
+                sy = cy;
+                p += 2;
+                starts.push(xy.len() / 2);
+                xy.push(cx);
+                xy.push(cy);
+                open = true;
+            } else if v == CLOSE {
+                if open {
+                    closed.push(true);
+                    open = false;
+                }
+                cx = sx;
+                cy = sy;
+            } else {
+                if !open {
+                    starts.push(xy.len() / 2);
+                    xy.push(cx);
+                    xy.push(cy);
+                    open = true;
+                }
+                if v == LINE {
+                    cx = self.pts[p];
+                    cy = self.pts[p + 1];
+                    p += 2;
+                    xy.push(cx);
+                    xy.push(cy);
+                } else if v == QUAD {
+                    let (qx, qy, ex, ey) = (self.pts[p], self.pts[p + 1], self.pts[p + 2], self.pts[p + 3]);
+                    p += 4;
+                    let dd = ((cx - 2.0 * qx + ex).abs()).max((cy - 2.0 * qy + ey).abs());
+                    let n = ((dd / (4.0 * tol)).sqrt().ceil() as usize).max(1).min(64);
+                    for k in 1..n + 1 {
+                        let t = (k as f64) / (n as f64);
+                        let u = 1.0 - t;
+                        xy.push(u * u * cx + 2.0 * u * t * qx + t * t * ex);
+                        xy.push(u * u * cy + 2.0 * u * t * qy + t * t * ey);
+                    }
+                    cx = ex;
+                    cy = ey;
+                } else {
+                    let (ax, ay, bx, by, ex, ey) = (self.pts[p], self.pts[p + 1], self.pts[p + 2], self.pts[p + 3], self.pts[p + 4], self.pts[p + 5]);
+                    p += 6;
+                    let d1 = ((cx - 2.0 * ax + bx).abs()).max((cy - 2.0 * ay + by).abs());
+                    let d2 = ((ax - 2.0 * bx + ex).abs()).max((ay - 2.0 * by + ey).abs());
+                    let n = ((3.0 * d1.max(d2) / (4.0 * tol)).sqrt().ceil() as usize).max(1).min(64);
+                    for k in 1..n + 1 {
+                        let t = (k as f64) / (n as f64);
+                        let u = 1.0 - t;
+                        let (b0, b1, b2, b3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                        xy.push(b0 * cx + b1 * ax + b2 * bx + b3 * ex);
+                        xy.push(b0 * cy + b1 * ay + b2 * by + b3 * ey);
+                    }
+                    cx = ex;
+                    cy = ey;
+                }
+            }
+        }
+        if open { closed.push(false); }
+        starts.push(xy.len() / 2);
+        Flat { xy, starts, closed }
+    }
+}

@@ -1,0 +1,447 @@
+//! The rasterizer behind PNG output. Paths fill by exact area coverage
+//! (signed-area accumulation per scanline, as font-rs does), which
+//! anti-aliases every edge; strokes become fills (stroke.nabi); markers
+//! are drawn once per size and quarter-pixel phase and stamped; text
+//! fills the built-in font's outlines. Colours blend in sRGB as browsers
+//! do, premultiplied, with straight-alpha output.
+
+mod stroke;
+
+use pkg::font;
+use pkg::layer::{Marker, marker_path};
+use pkg::path::Flat;
+use pkg::raster::stroke::Polys;
+use pkg::scene::{Scene, Stroke};
+use pkg::text;
+use pkg::{Color, Path};
+
+/// A rendered image: `width` x `height` RGBA pixels, top row first.
+///
+/// ```nabi
+/// let img = plot::raster::render(try plot::axes().size_px(8.0, 6.0).figure().scene(), 1.0);
+/// assert(img.width == 8 && img.rgba.len() == 8 * 6 * 4);
+/// ```
+#[derive(Clone, Debug)]
+pub struct Image {
+    pub width: usize;
+    pub height: usize;
+    pub rgba: List<u8>;
+}
+
+impl Image {
+    /// The pixel at `(x, y)` as a colour.
+    ///
+    /// ```nabi
+    /// let img = plot::raster::render(try plot::axes().size_px(20.0, 10.0).figure().scene(), 1.0);
+    /// assert(img.at(0, 0) == plot::Theme::light().background);
+    /// ```
+    pub fn at(self, x: usize, y: usize) -> Color {
+        let o = 4 * (y * self.width + x);
+        Color::rgba(self.rgba[o], self.rgba[o + 1], self.rgba[o + 2], self.rgba[o + 3])
+    }
+}
+
+// Premultiplied RGBA in [0, 1].
+struct Canvas {
+    w: usize;
+    h: usize;
+    px: List<f64>;
+    acc: List<f64>;
+}
+
+/// Paints a scene at `scale` device pixels per px.
+///
+/// ```nabi
+/// let s = try plot::line([0, 1], [0, 1]).size_px(50.0, 40.0).figure().scene();
+/// assert(plot::raster::render(s, 2.0).height == 80);
+/// ```
+pub fn render(s: Scene, scale: f64) -> Image {
+    let w = ((s.width * scale).ceil() as usize).max(1);
+    let h = ((s.height * scale).ceil() as usize).max(1);
+    let px: List<f64> = List::filled(w * h * 4, 0.0);
+    let cv = Canvas { w, h, px, acc: [] };
+    let bg = s.background;
+    if bg.a > 0 {
+        let a = bg.opacity();
+        let (r, g, b) = (unit(bg.r) * a, unit(bg.g) * a, unit(bg.b) * a);
+        for i in 0..w * h {
+            px[4 * i] = r;
+            px[4 * i + 1] = g;
+            px[4 * i + 2] = b;
+            px[4 * i + 3] = a;
+        }
+    }
+    let stamps: Dict<i64, List<f64>> = Dict::new();
+    for it in s.items {
+        match it {
+            Fill { path, color, clip } => {
+                if color.a == 0 || path.is_empty() { continue; }
+                let f = scaled(path, scale).flatten(0.2);
+                fill_flat(cv, f, color, box_of(s, clip, scale, w, h));
+            }
+            Line { path, stroke, clip } => {
+                if stroke.color.a == 0 || path.is_empty() { continue; }
+                stroke_path(cv, scaled(path, scale), stroke, scale, box_of(s, clip, scale, w, h));
+            }
+            Markers { xs, ys, shape, sizes, fills, edge, edge_width, clip } => {
+                markers(cv, stamps, xs, ys, shape, sizes, fills, edge, edge_width, scale, box_of(s, clip, scale, w, h));
+            }
+            Text { x, y, runs, size, color, anchor, rotate } => {
+                let tw = text::width(runs, size);
+                let x0 = match anchor {
+                    Start => 0.0,
+                    Middle => -tw / 2.0,
+                    End => -tw,
+                };
+                let p = Path::new();
+                let pen = x0;
+                for r in runs {
+                    let sz = size * r.scale;
+                    for c in r.text.chars() { pen += font::outline(p, c, pen, -r.rise * size, sz); }
+                }
+                let g = p.transformed(scale, scale, -rotate, x * scale, y * scale);
+                fill_flat(cv, g.flatten(0.1), color, (0, 0, w, h));
+            }
+            Image { x, y, w: iw, h: ih, cols, rows, rgba, clip } => {
+                image(cv, x * scale, y * scale, iw * scale, ih * scale, cols, rows, rgba, box_of(s, clip, scale, w, h));
+            }
+        }
+    }
+    // Straight alpha out.
+    let out: List<u8> = List::filled(w * h * 4, 0u8);
+    for i in 0..w * h {
+        let a = px[4 * i + 3];
+        if a <= 0.0 { continue; }
+        let inv = 1.0 / a;
+        out[4 * i] = byte(px[4 * i] * inv);
+        out[4 * i + 1] = byte(px[4 * i + 1] * inv);
+        out[4 * i + 2] = byte(px[4 * i + 2] * inv);
+        out[4 * i + 3] = byte(a);
+    }
+    Image { width: w, height: h, rgba: out }
+}
+
+fn unit(c: u8) -> f64 { (c as f64) / 255.0 }
+
+fn byte(v: f64) -> u8 {
+    let x = (v * 255.0 + 0.5).floor();
+    if x <= 0.0 { 0 } else if x >= 255.0 { 255 } else { x as u8 }
+}
+
+fn scaled(p: Path, k: f64) -> Path {
+    if k == 1.0 { return p; }
+    let pts: List<f64> = List::from_fn(p.pts.len(), |i| p.pts[i] * k);
+    Path { verbs: p.verbs, pts }
+}
+
+// The clip rectangle in device pixels: (x0, y0, x1, y1), half open.
+fn box_of(s: Scene, clip: usize, k: f64, w: usize, h: usize) -> (usize, usize, usize, usize) {
+    if clip == 0 || clip >= s.clips.len() { return (0, 0, w, h); }
+    let r = s.clips[clip];
+    let x0 = (r.x * k).floor().max(0.0) as usize;
+    let y0 = (r.y * k).floor().max(0.0) as usize;
+    let x1 = ((r.right() * k).ceil() as usize).min(w);
+    let y1 = ((r.bottom() * k).ceil() as usize).min(h);
+    (x0, y0, x1.max(x0), y1.max(y0))
+}
+
+fn stroke_path(cv: Canvas, p: Path, st: Stroke, k: f64, clip: (usize, usize, usize, usize)) {
+    let w = (st.width * k).max(0.35);
+    let dash: List<f64> = st.dash.iter().map(|d| d * k).collect();
+    let polys = stroke::outline(p.flatten(0.2), w, dash, st.round);
+    // Hairlines: thinner than a pixel keep the width and lose opacity.
+    let c = if st.width * k < 0.35 { st.color.with_alpha(st.color.opacity() * st.width * k / 0.35) } else { st.color };
+    fill_polys(cv, polys, c, clip);
+}
+
+fn fill_flat(cv: Canvas, f: Flat, color: Color, clip: (usize, usize, usize, usize)) {
+    fill_polys(cv, Polys { xy: f.xy, starts: f.starts }, color, clip);
+}
+
+// Fills closed polygons (nonzero, coverage clamped to 1) into the canvas.
+fn fill_polys(cv: Canvas, p: Polys, color: Color, clip: (usize, usize, usize, usize)) {
+    let n = p.xy.len() / 2;
+    if n < 3 { return; }
+    let (cx0, cy0, cx1, cy1) = clip;
+    let bx0 = f64::INFINITY;
+    let by0 = f64::INFINITY;
+    let bx1 = f64::NEG_INFINITY;
+    let by1 = f64::NEG_INFINITY;
+    for i in 0..n {
+        let x = p.xy[2 * i];
+        let y = p.xy[2 * i + 1];
+        if x < bx0 { bx0 = x; }
+        if x > bx1 { bx1 = x; }
+        if y < by0 { by0 = y; }
+        if y > by1 { by1 = y; }
+    }
+    if !(bx0 <= bx1) { return; }
+    let x0 = (bx0.floor().max(cx0 as f64)) as usize;
+    let y0 = (by0.floor().max(cy0 as f64)) as usize;
+    let x1 = (bx1.ceil() as i64).min(cx1 as i64);
+    let y1 = (by1.ceil() as i64).min(cy1 as i64);
+    if x1 <= x0 as i64 || y1 <= y0 as i64 { return; }
+    let bw = (x1 as usize) - x0;
+    let bh = (y1 as usize) - y0;
+    let stride = bw + 2;
+    let need = stride * bh;
+    if cv.acc.len() < need {
+        let grow = need - cv.acc.len();
+        for _i in 0..grow { cv.acc.push(0.0); }
+    }
+    let acc = cv.acc;
+    for i in 0..need { acc[i] = 0.0; }
+    let ox = x0 as f64;
+    let oy = y0 as f64;
+    let wf = bw as f64;
+    for s in 0..p.starts.len() - 1 {
+        let a = p.starts[s];
+        let b = p.starts[s + 1];
+        if b - a < 2 { continue; }
+        for i in a..b {
+            let j = if i + 1 == b { a } else { i + 1 };
+            clipped(acc, stride, bh, wf, p.xy[2 * i] - ox, p.xy[2 * i + 1] - oy, p.xy[2 * j] - ox, p.xy[2 * j + 1] - oy);
+        }
+    }
+    let ca = color.opacity();
+    let (r, g, bl) = (unit(color.r) * ca, unit(color.g) * ca, unit(color.b) * ca);
+    let px = cv.px;
+    let w = cv.w;
+    for y in 0..bh {
+        let s = 0.0;
+        let row = y * stride;
+        let prow = ((y0 + y) * w + x0) * 4;
+        for x in 0..bw {
+            s += acc[row + x];
+            let a = s.abs();
+            if a < 1e-4 { continue; }
+            let cov = if a > 1.0 { 1.0 } else { a };
+            let o = prow + 4 * x;
+            let k = 1.0 - ca * cov;
+            px[o] = r * cov + px[o] * k;
+            px[o + 1] = g * cov + px[o + 1] * k;
+            px[o + 2] = bl * cov + px[o + 2] * k;
+            px[o + 3] = ca * cov + px[o + 3] * k;
+        }
+    }
+}
+
+// A line in box coordinates, with the parts left or right of the box
+// moved onto its edge (which keeps the winding of every pixel inside).
+fn clipped(acc: List<f64>, stride: usize, h: usize, w: f64, x0: f64, y0: f64, x1: f64, y1: f64) {
+    if y0 == y1 { return; }
+    if (y0 < 0.0 && y1 < 0.0) || (y0 >= h as f64 && y1 >= h as f64) { return; }
+    let ts: List<f64> = [0.0];
+    if (x0 < 0.0) != (x1 < 0.0) { ts.push(-x0 / (x1 - x0)); }
+    if (x0 > w) != (x1 > w) { ts.push((w - x0) / (x1 - x0)); }
+    ts.push(1.0);
+    if ts.len() > 3 && ts[1] > ts[2] {
+        let t = ts[1];
+        ts[1] = ts[2];
+        ts[2] = t;
+    }
+    for k in 0..ts.len() - 1 {
+        let (ta, tb) = (ts[k], ts[k + 1]);
+        let ax = (x0 + (x1 - x0) * ta).max(0.0).min(w);
+        let ay = y0 + (y1 - y0) * ta;
+        let bx = (x0 + (x1 - x0) * tb).max(0.0).min(w);
+        let by = y0 + (y1 - y0) * tb;
+        line(acc, stride, h, ax, ay, bx, by);
+    }
+}
+
+// Signed area of the line into the accumulation buffer (Levien's
+// font-rs accumulator).
+fn line(acc: List<f64>, stride: usize, h: usize, ax: f64, ay: f64, bx: f64, by: f64) {
+    if ay == by { return; }
+    let (dir, x0p, y0p, x1p, y1p) = if ay < by { (1.0, ax, ay, bx, by) } else { (-1.0, bx, by, ax, ay) };
+    let dxdy = (x1p - x0p) / (y1p - y0p);
+    let x = x0p;
+    let ystart = if y0p < 0.0 {
+        x -= y0p * dxdy;
+        0usize
+    } else {
+        y0p as usize
+    };
+    let yend = (y1p.ceil().min(h as f64)) as usize;
+    let y = ystart;
+    while y < yend {
+        let line_start = y * stride;
+        let dy = ((y + 1) as f64).min(y1p) - (y as f64).max(y0p);
+        let xnext = x + dxdy * dy;
+        let d = dy * dir;
+        let (xa, xb) = if x < xnext { (x, xnext) } else { (xnext, x) };
+        let xa_floor = xa.floor();
+        let xai = xa_floor as usize;
+        let xb_ceil = xb.ceil();
+        let xbi = xb_ceil as usize;
+        if xbi <= xai + 1 {
+            let xmf = 0.5 * (x + xnext) - xa_floor;
+            acc[line_start + xai] += d - d * xmf;
+            acc[line_start + xai + 1] += d * xmf;
+        } else {
+            let s = 1.0 / (xb - xa);
+            let xaf = xa - xa_floor;
+            let a0 = 0.5 * s * (1.0 - xaf) * (1.0 - xaf);
+            let xbf = xb - xb_ceil + 1.0;
+            let am = 0.5 * s * xbf * xbf;
+            acc[line_start + xai] += d * a0;
+            if xbi == xai + 2 {
+                acc[line_start + xai + 1] += d * (1.0 - a0 - am);
+            } else {
+                let a1 = s * (1.5 - xaf);
+                acc[line_start + xai + 1] += d * (a1 - a0);
+                for xi in xai + 2..xbi - 1 { acc[line_start + xi] += d * s; }
+                let a2 = a1 + ((xbi - xai - 3) as f64) * s;
+                acc[line_start + xbi - 1] += d * (1.0 - a2 - am);
+            }
+            acc[line_start + xbi] += d * am;
+        }
+        x = xnext;
+        y += 1;
+    }
+}
+
+// Coverage of a path in a small square, for marker stamps.
+fn mask(p: Path, side: usize) -> List<f64> {
+    let f = p.flatten(0.1);
+    let stride = side + 2;
+    let acc: List<f64> = List::filled(stride * side, 0.0);
+    let n = f.xy.len() / 2;
+    let wf = side as f64;
+    for s in 0..f.starts.len() - 1 {
+        let a = f.starts[s];
+        let b = f.starts[s + 1];
+        if b - a < 2 { continue; }
+        for i in a..b {
+            let j = if i + 1 == b { a } else { i + 1 };
+            clipped(acc, stride, side, wf, f.xy[2 * i], f.xy[2 * i + 1], f.xy[2 * j], f.xy[2 * j + 1]);
+        }
+    }
+    let _ = n;
+    let out: List<f64> = List::filled(side * side, 0.0);
+    for y in 0..side {
+        let sum = 0.0;
+        for x in 0..side {
+            sum += acc[y * stride + x];
+            out[y * side + x] = sum.abs().min(1.0);
+        }
+    }
+    out
+}
+
+fn stamp_ring(p: Path, w: f64) -> Path {
+    // The marker's outline as a stroke, as a fillable path.
+    let polys = stroke::outline(p.flatten(0.1), w, [], true);
+    let out = Path::new();
+    for s in 0..polys.starts.len() - 1 {
+        let a = polys.starts[s];
+        let b = polys.starts[s + 1];
+        if b - a < 3 { continue; }
+        out.move_to(polys.xy[2 * a], polys.xy[2 * a + 1]);
+        for i in a + 1..b { out.line_to(polys.xy[2 * i], polys.xy[2 * i + 1]); }
+        out.close();
+    }
+    out
+}
+
+fn markers(cv: Canvas, stamps: Dict<i64, List<f64>>, xs: List<f64>, ys: List<f64>, shape: Marker, sizes: List<f64>, fills: List<Color>, edge: Color, edge_width: f64, k: f64, clip: (usize, usize, usize, usize)) {
+    if shape == Marker::Nothing || sizes.is_empty() || fills.is_empty() { return; }
+    let n = xs.len().min(ys.len());
+    let (cx0, cy0, cx1, cy1) = clip;
+    let ring = edge_width > 0.0 && edge.a > 0;
+    let ew = edge_width * k;
+    for i in 0..n {
+        let d = (if sizes.len() == 1 { sizes[0] } else if i < sizes.len() { sizes[i] } else { continue }) * k;
+        if !(d > 0.0) { continue; }
+        let x = xs[i] * k;
+        let y = ys[i] * k;
+        if !(x > -1e6 && x < 1e7 && y > -1e6 && y < 1e7) { continue; }
+        let dq = (d * 4.0).round() / 4.0;
+        let fx = x - x.floor();
+        let fy = y - y.floor();
+        let qx = ((fx * 4.0).floor() as i64).min(3);
+        let qy = ((fy * 4.0).floor() as i64).min(3);
+        let pad = (if ring { ew } else { 0.0 }) + 2.0;
+        let side = (dq + 2.0 * pad).ceil() as usize + 1;
+        let half = (side / 2) as f64;
+        let key = (((dq * 4.0) as i64) << 8) | (qx << 4) | (qy << 2) | (shape as i64 & 0) ;
+        let ox = (qx as f64 + 0.125) / 4.0 + half;
+        let oy = (qy as f64 + 0.125) / 4.0 + half;
+        let fkey = key * 2;
+        let body = match stamps.get(fkey) {
+            m: List<f64> => m,
+            none => {
+                let m = mask(marker_path(shape, ox, oy, dq), side);
+                stamps[fkey] = m;
+                m
+            }
+        };
+        let col = if fills.len() == 1 { fills[0] } else if i < fills.len() { fills[i] } else { fills[0] };
+        let bx = x.floor() as i64 - half as i64;
+        let by = y.floor() as i64 - half as i64;
+        blit(cv, body, side, bx, by, col, cx0, cy0, cx1, cy1);
+        if ring {
+            let rkey = key * 2 + 1 + (((ew * 8.0).round() as i64) << 40);
+            let r = match stamps.get(rkey) {
+                m: List<f64> => m,
+                none => {
+                    let m = mask(stamp_ring(marker_path(shape, ox, oy, dq), ew), side);
+                    stamps[rkey] = m;
+                    m
+                }
+            };
+            blit(cv, r, side, bx, by, edge, cx0, cy0, cx1, cy1);
+        }
+    }
+}
+
+fn blit(cv: Canvas, m: List<f64>, side: usize, bx: i64, by: i64, color: Color, cx0: usize, cy0: usize, cx1: usize, cy1: usize) {
+    let ca = color.opacity();
+    if ca == 0.0 { return; }
+    let (r, g, b) = (unit(color.r) * ca, unit(color.g) * ca, unit(color.b) * ca);
+    let px = cv.px;
+    let w = cv.w;
+    for yy in 0..side {
+        let py = by + yy as i64;
+        if py < cy0 as i64 || py >= cy1 as i64 { continue; }
+        for xx in 0..side {
+            let cov = m[yy * side + xx];
+            if cov < 1e-4 { continue; }
+            let pxx = bx + xx as i64;
+            if pxx < cx0 as i64 || pxx >= cx1 as i64 { continue; }
+            let o = ((py as usize) * w + pxx as usize) * 4;
+            let kk = 1.0 - ca * cov;
+            px[o] = r * cov + px[o] * kk;
+            px[o + 1] = g * cov + px[o + 1] * kk;
+            px[o + 2] = b * cov + px[o + 2] * kk;
+            px[o + 3] = ca * cov + px[o + 3] * kk;
+        }
+    }
+}
+
+fn image(cv: Canvas, x: f64, y: f64, w: f64, h: f64, cols: usize, rows: usize, rgba: List<u8>, clip: (usize, usize, usize, usize)) {
+    if cols == 0 || rows == 0 || !(w > 0.0) || !(h > 0.0) { return; }
+    let (cx0, cy0, cx1, cy1) = clip;
+    let x0 = (x.round().max(cx0 as f64)) as usize;
+    let y0 = (y.round().max(cy0 as f64)) as usize;
+    let x1 = ((x + w).round() as usize).min(cx1);
+    let y1 = ((y + h).round() as usize).min(cy1);
+    let px = cv.px;
+    let cw = cv.w;
+    for py in y0..y1 {
+        let sr = ((((py as f64) + 0.5 - y) / h * (rows as f64)).floor() as usize).min(rows - 1);
+        for pxx in x0..x1 {
+            let sc = ((((pxx as f64) + 0.5 - x) / w * (cols as f64)).floor() as usize).min(cols - 1);
+            let s = 4 * (sr * cols + sc);
+            let a = unit(rgba[s + 3]);
+            if a == 0.0 { continue; }
+            let o = (py * cw + pxx) * 4;
+            let k = 1.0 - a;
+            px[o] = unit(rgba[s]) * a + px[o] * k;
+            px[o + 1] = unit(rgba[s + 1]) * a + px[o + 1] * k;
+            px[o + 2] = unit(rgba[s + 2]) * a + px[o + 2] * k;
+            px[o + 3] = a + px[o + 3] * k;
+        }
+    }
+}

@@ -1,0 +1,9 @@
+Package {
+    name: "gallery",
+    version: "0.1.0",
+    toolchain: "0.1",
+    publish: false,
+    deps: {
+        "plot": Dep::path("../.."),
+    },
+}

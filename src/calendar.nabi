@@ -1,0 +1,150 @@
+//! Dates on an axis: values are seconds since 1970-01-01 00:00 UTC
+//! (proleptic Gregorian calendar, no leap seconds). Ticks fall on whole
+//! calendar units: years, months, days, hours, minutes or seconds.
+//! Calendar arithmetic is Hinnant's `days_from_civil` and
+//! `civil_from_days`.
+
+const DAY: f64 = 86400.0;
+
+/// Seconds since the epoch at the start of a date.
+///
+/// ```nabi
+/// assert(plot::date(1970, 1, 2) == 86400.0);
+/// assert(plot::date(2000, 3, 1) == 951868800.0);
+/// ```
+pub fn date(year: i64, month: i64, day: i64) -> f64 { (days_from_civil(year, month, day) as f64) * DAY }
+
+/// Seconds since the epoch at a date and time of day (UTC).
+///
+/// ```nabi
+/// assert(plot::datetime(1970, 1, 1, 1, 0, 30.0) == 3630.0);
+/// ```
+pub fn datetime(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: f64) -> f64 {
+    date(year, month, day) + ((hour * 3600 + minute * 60) as f64) + second
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date.
+pub(pkg) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// (year, month, day) of days since 1970-01-01.
+pub(pkg) fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+// Steps in seconds below a month, tried from small to large.
+const STEPS: [f64; 19] = [1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0, 10800.0, 21600.0, 43200.0, 86400.0, 172800.0];
+
+/// The unit a run of date ticks is labelled in.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(pkg) enum Unit { Second, Minute, Hour, Day, Month, Year }
+
+/// Ticks on calendar boundaries in `[a, b]`, about `m` of them.
+pub(pkg) fn ticks(a: f64, b: f64, m: usize) -> List<f64> {
+    let span = b - a;
+    if !(span > 0.0) { return [a]; }
+    let want = span / (m.max(2) as f64);
+    for s in STEPS {
+        if s >= want { return every(a, b, s); }
+    }
+    if want <= 7.0 * DAY { return every(a, b, 7.0 * DAY); }
+    if want <= 14.0 * DAY { return every(a, b, 14.0 * DAY); }
+    let months_wanted = want / (30.44 * DAY);
+    for mo in [1, 2, 3, 4, 6] {
+        if (mo as f64) >= months_wanted { return months(a, b, mo); }
+    }
+    // Whole years, a nice multiple.
+    let years = months_wanted / 12.0;
+    let step = nice_years(years);
+    let (y0, _, _) = civil_from_days((a / DAY).floor() as i64);
+    let (y1, _, _) = civil_from_days((b / DAY).floor() as i64);
+    let out: List<f64> = [];
+    let y = (y0 / step) * step;
+    while y <= y1 + 1 {
+        let t = date(y, 1, 1);
+        if t >= a && t <= b { out.push(t); }
+        y += step;
+    }
+    out
+}
+
+fn nice_years(y: f64) -> i64 {
+    for s in [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000] {
+        if (s as f64) >= y { return s; }
+    }
+    ((y / 1000.0).ceil() as i64) * 1000
+}
+
+fn every(a: f64, b: f64, s: f64) -> List<f64> {
+    let first = (a / s).ceil();
+    let last = (b / s).floor();
+    if last - first > 2000.0 { return [a, b]; }
+    let out: List<f64> = [];
+    let k = first;
+    while k <= last {
+        out.push(k * s);
+        k += 1.0;
+    }
+    out
+}
+
+fn months(a: f64, b: f64, step: i64) -> List<f64> {
+    let (y, m, _) = civil_from_days((a / DAY).floor() as i64);
+    let out: List<f64> = [];
+    let k = y * 12 + (m - 1);
+    k = k - k %% step;
+    loop {
+        let t = date(k.div_euclid(12), k %% 12 + 1, 1);
+        if t > b { break; }
+        if t >= a { out.push(t); }
+        k += step;
+    }
+    out
+}
+
+/// The coarsest unit the ticks differ in.
+pub(pkg) fn unit_of(ticks: List<f64>) -> Unit {
+    let step = if ticks.len() >= 2 { ticks[1] - ticks[0] } else { DAY };
+    if step >= 365.0 * DAY { return Unit::Year; }
+    if step >= 28.0 * DAY { return Unit::Month; }
+    if step >= DAY { return Unit::Day; }
+    if step >= 3600.0 { return Unit::Hour; }
+    if step >= 60.0 { return Unit::Minute; }
+    Unit::Second
+}
+
+/// A tick label for `t` in `unit`: `2024`, `2024-03`, `2024-03-14`,
+/// `14:30` (the date at midnight), `14:30:05`.
+pub(pkg) fn label(t: f64, unit: Unit) -> str {
+    let days = (t / DAY).floor() as i64;
+    let (y, m, d) = civil_from_days(days);
+    let secs = (t - (days as f64) * DAY).round() as i64;
+    let hh = secs / 3600;
+    let mm = (secs / 60) % 60;
+    let ss = secs % 60;
+    match unit {
+        Year => f"{y}",
+        Month => f"{y}-{m:02}",
+        Day => f"{y}-{m:02}-{d:02}",
+        // Midnight shows the date, so a run of hours keeps its day.
+        Hour | Minute if secs == 0 => f"{y}-{m:02}-{d:02}",
+        Hour | Minute => f"{hh:02}:{mm:02}",
+        Second => f"{hh:02}:{mm:02}:{ss:02}",
+    }
+}

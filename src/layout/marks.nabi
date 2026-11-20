@@ -1,0 +1,616 @@
+// Layers to primitives: each mark's data extent for autoscaling, and
+// its paths, markers and images in px.
+
+use pkg::contour;
+use pkg::layer::{Dash, Layer, Mark, Marker, StepAt, Style};
+use pkg::layout::panel::{Lim, Tx, spec};
+use pkg::layout::{Ctx, VAlign};
+use pkg::path::Path;
+use pkg::scene::{Anchor, Item, Rect, Stroke};
+use pkg::ticks;
+use pkg::{Color, Colormap, PlotError, Scale};
+
+/// Adds what `m` covers to the x and y limits.
+pub(pkg) fn extent(m: Mark, ref lx: Lim, ref ly: Lim) {
+    match m {
+        Line { x, y, .. } => {
+            lx.add_all(x);
+            ly.add_all(y);
+        }
+        Scatter { x, y, .. } => {
+            lx.add_all(x);
+            ly.add_all(y);
+        }
+        Bars { x, h, base, width, horizontal } => {
+            for i in 0..x.len().min(h.len()) {
+                let (a, b) = (x[i] - width / 2.0, x[i] + width / 2.0);
+                let (v0, v1) = (base[i], base[i] + h[i]);
+                if horizontal {
+                    ly.add(a);
+                    ly.add(b);
+                    lx.add(v0);
+                    lx.add(v1);
+                } else {
+                    lx.add(a);
+                    lx.add(b);
+                    ly.add(v0);
+                    ly.add(v1);
+                }
+            }
+            if horizontal { lx.sticky.push(0.0); } else { ly.sticky.push(0.0); }
+        }
+        Fill { x, y1, y2, .. } => {
+            lx.add_all(x);
+            ly.add_all(y1);
+            ly.add_all(y2);
+        }
+        ErrorBars { x, y, ylo, yhi, xlo, xhi } => {
+            for i in 0..x.len().min(y.len()) {
+                let dl = if i < ylo.len() { ylo[i] } else { 0.0 };
+                let dh = if i < yhi.len() { yhi[i] } else { 0.0 };
+                let xl = if i < xlo.len() { xlo[i] } else { 0.0 };
+                let xh = if i < xhi.len() { xhi[i] } else { 0.0 };
+                lx.add(x[i] - xl);
+                lx.add(x[i] + xh);
+                ly.add(y[i] - dl);
+                ly.add(y[i] + dh);
+            }
+        }
+        Boxes { pos, stats, width } => {
+            for i in 0..pos.len() {
+                lx.add(pos[i] - width / 2.0);
+                lx.add(pos[i] + width / 2.0);
+                if i < stats.len() {
+                    ly.add(stats[i].lo);
+                    ly.add(stats[i].hi);
+                    ly.add_all(stats[i].fliers);
+                }
+            }
+        }
+        Violins { pos, at, width, .. } => {
+            for i in 0..pos.len() {
+                lx.add(pos[i] - width / 2.0);
+                lx.add(pos[i] + width / 2.0);
+                if i < at.len() { ly.add_all(at[i]); }
+            }
+        }
+        Image { extent, .. } => {
+            let (x0, x1, y0, y1) = extent;
+            for v in [x0, x1] {
+                lx.add(v);
+                lx.sticky.push(v);
+            }
+            for v in [y0, y1] {
+                ly.add(v);
+                ly.sticky.push(v);
+            }
+        }
+        Contour { extent, .. } => {
+            let (x0, x1, y0, y1) = extent;
+            for v in [x0, x1] {
+                lx.add(v);
+                lx.sticky.push(v);
+            }
+            for v in [y0, y1] {
+                ly.add(v);
+                ly.sticky.push(v);
+            }
+        }
+        Quiver { x, y, u, v, scale } => {
+            lx.add_all(x);
+            ly.add_all(y);
+            if scale > 0.0 {
+                for i in 0..x.len().min(u.len()) {
+                    lx.add(x[i] + u[i] * scale);
+                    ly.add(y[i] + v[i] * scale);
+                }
+            }
+        }
+        Text { x, y, .. } => {
+            lx.add(x);
+            ly.add(y);
+        }
+        Note { x, y, tx, ty, .. } => {
+            lx.add(x);
+            ly.add(y);
+            lx.add(tx);
+            ly.add(ty);
+        }
+        Rule { at, vertical } => if vertical { lx.add(at); } else { ly.add(at); },
+        Span { .. } => {}
+    }
+}
+
+/// The colormap of a coloured layer.
+pub(pkg) fn cmap_of(c: Ctx, l: Layer) -> Colormap { l.style.cmap ?? c.theme.colormap }
+
+/// The value range the colormap of a layer spans.
+pub(pkg) fn color_range(l: Layer) -> (f64, f64) {
+    let vs: List<f64> = match l.mark {
+        Image { z, .. } => z,
+        Contour { z, .. } => z,
+        Scatter { values, .. } => values,
+        _ => [],
+    };
+    let lo = f64::INFINITY;
+    let hi = f64::NEG_INFINITY;
+    for v in vs {
+        if v.is_finite() {
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+    }
+    if l.style.vmin == l.style.vmin { lo = l.style.vmin; }
+    if l.style.vmax == l.style.vmax { hi = l.style.vmax; }
+    if !(lo <= hi) { return (0.0, 1.0); }
+    if lo == hi { return (lo - 0.5, hi + 0.5); }
+    (lo, hi)
+}
+
+/// The levels of a contour layer: its own, or nice values over the data.
+pub(pkg) fn levels_of(l: Layer) -> List<f64> {
+    match l.mark {
+        Contour { levels, filled, .. } => {
+            if !levels.is_empty() { return levels.clone(); }
+            let (lo, hi) = color_range(l);
+            let t = ticks::extended(lo, hi, 8, only_loose: filled);
+            if filled { t } else { t.iter().filter(|v| v > lo && v < hi).collect() }
+        }
+        _ => [],
+    }
+}
+
+/// Whether a layer has a colorbar to show.
+pub(pkg) fn mappable(l: Layer) -> bool {
+    match l.mark {
+        Image { .. } | Contour { .. } => true,
+        Scatter { values, .. } => !values.is_empty(),
+        _ => false,
+    }
+}
+
+fn width_of(c: Ctx, s: Style) -> f64 { if s.width == s.width { s.width } else { c.theme.line_width } }
+
+fn dashes(d: Dash, w: f64) -> List<f64> {
+    let k = w.max(1.0);
+    match d {
+        Solid => [],
+        Dashed => [3.7 * k, 1.6 * k],
+        Dotted => [1.0 * k, 1.65 * k],
+        DashDot => [6.4 * k, 1.6 * k, 1.0 * k, 1.6 * k],
+        Pattern(p) => p.iter().map(|v| v * k).collect(),
+    }
+}
+
+fn stroke(c: Ctx, s: Style, color: Color) -> Stroke {
+    let w = width_of(c, s);
+    Stroke { color: color.with_alpha(s.alpha * color.opacity()), width: w, dash: dashes(s.dash, w), round: true }
+}
+
+fn edge_color(c: Ctx, s: Style) throws (PlotError) -> Color | none {
+    match s.edge {
+        col: Color => col,
+        st: str => try spec(c, st),
+        none => none,
+    }
+}
+
+/// Draws one layer.
+pub(pkg) fn draw(c: Ctx, l: Layer, color: Color, tx: Tx, ty: Tx, plot: Rect, clip: usize) throws (PlotError) {
+    let s = l.style;
+    let fill = color.with_alpha(s.alpha * color.opacity());
+    match l.mark {
+        Line { x, y, step } => {
+            let (xs, ys) = px_points(x, y, tx, ty);
+            let (sx, sy) = match step {
+                at: StepAt => steps(xs, ys, at),
+                none => (xs, ys),
+            };
+            c.push(Item::Line { path: Path::polyline(sx, sy), stroke: stroke(c, s, color), clip });
+            if s.marker != Marker::Nothing {
+                let size = if s.size == s.size { s.size } else { c.theme.marker_size };
+                let e = try edge_color(c, s);
+                c.push(Item::Markers { xs, ys, shape: s.marker, sizes: [size], fills: [fill], edge: e ?? Color::clear(), edge_width: if e is none { 0.0 } else { 1.0 }, clip });
+            }
+        }
+        Scatter { x, y, sizes, values } => {
+            let (xs, ys) = px_points(x, y, tx, ty);
+            let size = if s.size == s.size { s.size } else { c.theme.marker_size };
+            let fills: List<Color> = if values.is_empty() {
+                [fill]
+            } else {
+                let m = cmap_of(c, l);
+                let (lo, hi) = color_range(l);
+                values.iter().map(|v| m.at((v - lo) / (hi - lo)).with_alpha(s.alpha)).collect()
+            };
+            let e = try edge_color(c, s);
+            c.push(Item::Markers {
+                xs,
+                ys,
+                shape: s.marker,
+                sizes: if sizes.is_empty() { [size] } else { sizes.clone() },
+                fills,
+                edge: e ?? Color::clear(),
+                edge_width: if e is none { 0.0 } else { 1.0 },
+                clip,
+            });
+        }
+        Bars { x, h, base, width, horizontal } => {
+            let p = Path::new();
+            let (tp, tv) = if horizontal { (ty, tx) } else { (tx, ty) };
+            for i in 0..x.len().min(h.len()) {
+                let a = tp.at(x[i] - width / 2.0);
+                let b = tp.at(x[i] + width / 2.0);
+                let v0 = clamp_px(tv, base[i]);
+                let v1 = clamp_px(tv, base[i] + h[i]);
+                if !(a == a && b == b && v0 == v0 && v1 == v1) { continue; }
+                if horizontal { p.add_rect(v0.min(v1), a.min(b), (v1 - v0).abs(), (b - a).abs()); } else { p.add_rect(a.min(b), v0.min(v1), (b - a).abs(), (v1 - v0).abs()); }
+            }
+            c.push(Item::Fill { path: p, color: fill, clip });
+            if let e = try edge_color(c, s) {
+                c.push(Item::Line { path: p, stroke: Stroke { color: e, width: if s.width == s.width { s.width } else { 1.0 }, dash: [], round: false }, clip });
+            }
+        }
+        Fill { x, y1, y2, outline } => {
+            let n = x.len().min(y1.len()).min(y2.len());
+            let xs: List<f64> = [];
+            let ys: List<f64> = [];
+            for i in 0..n {
+                xs.push(tx.at(x[i]));
+                ys.push(clamp_px(ty, y2[i]));
+            }
+            for k in 0..n {
+                let i = n - 1 - k;
+                xs.push(tx.at(x[i]));
+                ys.push(clamp_px(ty, y1[i]));
+            }
+            let p = Path::new();
+            p.add_polygon(xs, ys);
+            c.push(Item::Fill { path: p, color: fill, clip });
+            if outline {
+                let ox: List<f64> = xs[0:n].to_list();
+                let oy: List<f64> = ys[0:n].to_list();
+                let st = stroke(c, s, color);
+                st.color = color;
+                c.push(Item::Line { path: Path::polyline(ox, oy), stroke: st, clip });
+            }
+        }
+        ErrorBars { x, y, ylo, yhi, xlo, xhi } => {
+            let p = Path::new();
+            let cap = 3.0;
+            for i in 0..x.len().min(y.len()) {
+                let px = tx.at(x[i]);
+                let py = ty.at(y[i]);
+                if i < ylo.len() && i < yhi.len() {
+                    let a = clamp_px(ty, y[i] - ylo[i]);
+                    let b = clamp_px(ty, y[i] + yhi[i]);
+                    p.move_to(px, a);
+                    p.line_to(px, b);
+                    for q in [a, b] {
+                        p.move_to(px - cap, q);
+                        p.line_to(px + cap, q);
+                    }
+                }
+                if i < xlo.len() && i < xhi.len() {
+                    let a = clamp_px(tx, x[i] - xlo[i]);
+                    let b = clamp_px(tx, x[i] + xhi[i]);
+                    p.move_to(a, py);
+                    p.line_to(b, py);
+                    for q in [a, b] {
+                        p.move_to(q, py - cap);
+                        p.line_to(q, py + cap);
+                    }
+                }
+            }
+            c.push(Item::Line { path: p, stroke: Stroke { color: fill, width: if s.width == s.width { s.width } else { 1.25 }, dash: [], round: false }, clip });
+            if s.marker != Marker::Nothing {
+                let (xs, ys) = px_points(x, y, tx, ty);
+                let size = if s.size == s.size { s.size } else { c.theme.marker_size * 0.9 };
+                c.push(Item::Markers { xs, ys, shape: s.marker, sizes: [size], fills: [fill], edge: Color::clear(), edge_width: 0.0, clip });
+            }
+        }
+        Boxes { pos, stats, width } => {
+            let body = Path::new();
+            let lines = Path::new();
+            let med = Path::new();
+            let fx: List<f64> = [];
+            let fy: List<f64> = [];
+            for i in 0..pos.len().min(stats.len()) {
+                let b = stats[i];
+                let a = tx.at(pos[i] - width / 2.0);
+                let z = tx.at(pos[i] + width / 2.0);
+                let m = tx.at(pos[i]);
+                let (q1, q3) = (ty.at(b.q1), ty.at(b.q3));
+                body.add_rect(a.min(z), q1.min(q3), (z - a).abs(), (q1 - q3).abs());
+                let (lo, hi) = (ty.at(b.lo), ty.at(b.hi));
+                let cw = (z - a).abs() * 0.25;
+                lines.move_to(m, q1);
+                lines.line_to(m, lo);
+                lines.move_to(m - cw, lo);
+                lines.line_to(m + cw, lo);
+                lines.move_to(m, q3);
+                lines.line_to(m, hi);
+                lines.move_to(m - cw, hi);
+                lines.line_to(m + cw, hi);
+                let md = ty.at(b.median);
+                med.move_to(a, md);
+                med.line_to(z, md);
+                for f in b.fliers {
+                    fx.push(m);
+                    fy.push(ty.at(f));
+                }
+            }
+            c.push(Item::Fill { path: body, color: color.with_alpha(0.25 * s.alpha), clip });
+            let w = if s.width == s.width { s.width } else { 1.25 };
+            let st = Stroke { color, width: w, dash: [], round: false };
+            c.push(Item::Line { path: body, stroke: st, clip });
+            c.push(Item::Line { path: lines, stroke: st, clip });
+            c.push(Item::Line { path: med, stroke: Stroke { color, width: w * 1.8, dash: [], round: false }, clip });
+            if !fx.is_empty() {
+                c.push(Item::Markers { xs: fx, ys: fy, shape: Marker::Circle, sizes: [c.theme.marker_size * 0.8], fills: [color.with_alpha(0.0)], edge: color, edge_width: 1.0, clip });
+            }
+        }
+        Violins { pos, at, dens, width, medians } => {
+            let body = Path::new();
+            let med = Path::new();
+            for i in 0..pos.len().min(at.len()) {
+                let d = dens[i];
+                let peak = d.iter().fold(0.0, |a, v| a.max(v));
+                if peak <= 0.0 { continue; }
+                let xs: List<f64> = [];
+                let ys: List<f64> = [];
+                for k in 0..d.len() {
+                    xs.push(tx.at(pos[i] + d[k] / peak * width / 2.0));
+                    ys.push(ty.at(at[i][k]));
+                }
+                for j in 0..d.len() {
+                    let k = d.len() - 1 - j;
+                    xs.push(tx.at(pos[i] - d[k] / peak * width / 2.0));
+                    ys.push(ty.at(at[i][k]));
+                }
+                body.add_polygon(xs, ys);
+                if i < medians.len() {
+                    let m = ty.at(medians[i]);
+                    med.move_to(tx.at(pos[i] - width * 0.15), m);
+                    med.line_to(tx.at(pos[i] + width * 0.15), m);
+                }
+            }
+            c.push(Item::Fill { path: body, color: fill, clip });
+            c.push(Item::Line { path: body, stroke: Stroke { color, width: 1.0, dash: [], round: true }, clip });
+            c.push(Item::Line { path: med, stroke: Stroke { color: c.theme.ink, width: 2.0, dash: [], round: false }, clip });
+        }
+        Image { z, rows, cols, extent } => {
+            let (x0, x1, y0, y1) = extent;
+            let (px0, px1, py0, py1) = (tx.at(x0), tx.at(x1), ty.at(y0), ty.at(y1));
+            let m = cmap_of(c, l);
+            let (lo, hi) = color_range(l);
+            let flip_x = px1 < px0;
+            let flip_y = py0 > py1;
+            let rgba: List<u8> = List::filled(rows * cols * 4, 0u8);
+            let span = hi - lo;
+            for r in 0..rows {
+                let src_r = if flip_y { rows - 1 - r } else { r };
+                for k in 0..cols {
+                    let src_c = if flip_x { cols - 1 - k } else { k };
+                    let col = m.at((z[src_r * cols + src_c] - lo) / span);
+                    let o = (r * cols + k) * 4;
+                    rgba[o] = col.r;
+                    rgba[o + 1] = col.g;
+                    rgba[o + 2] = col.b;
+                    rgba[o + 3] = ((col.a as f64) * s.alpha + 0.5) as u8;
+                }
+            }
+            c.push(Item::Image { x: px0.min(px1), y: py0.min(py1), w: (px1 - px0).abs(), h: (py1 - py0).abs(), cols, rows, rgba, clip });
+        }
+        Contour { z, rows, cols, extent, filled, .. } => {
+            let (x0, x1, y0, y1) = extent;
+            let gx = |g: f64| -> f64 { tx.at(x0 + g * (x1 - x0) / ((cols - 1).max(1) as f64)) };
+            let gy = |g: f64| -> f64 { ty.at(y0 + g * (y1 - y0) / ((rows - 1).max(1) as f64)) };
+            let m = cmap_of(c, l);
+            let (lo, hi) = color_range(l);
+            let lv = levels_of(l);
+            let own: Color | none = match s.color {
+                none => none,
+                _ => color,
+            };
+            if filled {
+                for k in 0..lv.len().max(1) - 1 {
+                    let pieces = contour::band(z, rows, cols, lv[k], lv[k + 1], k + 2 == lv.len());
+                    let p = pieces_path(pieces, gx, gy, true);
+                    let mid = (lv[k] + lv[k + 1]) / 2.0;
+                    let t = if lv.len() > 2 { (k as f64) / ((lv.len() - 2) as f64) } else { (mid - lo) / (hi - lo) };
+                    c.push(Item::Fill { path: p, color: m.at(t).with_alpha(s.alpha), clip });
+                }
+            } else {
+                for v in lv {
+                    let pieces = contour::lines(z, rows, cols, v);
+                    let p = pieces_path(pieces, gx, gy, false);
+                    let col = own ?? m.at((v - lo) / (hi - lo));
+                    c.push(Item::Line { path: p, stroke: Stroke { color: col.with_alpha(s.alpha), width: if s.width == s.width { s.width } else { 1.25 }, dash: [], round: true }, clip });
+                }
+            }
+        }
+        Quiver { x, y, u, v, scale } => {
+            let n = x.len().min(y.len()).min(u.len()).min(v.len());
+            let k = scale;
+            if !(k > 0.0) {
+                // Longest arrow as long as the typical point spacing.
+                let lx = Lim { lo: f64::INFINITY, hi: f64::NEG_INFINITY, sticky: [], scale: Scale::Linear };
+                let ly = Lim { lo: f64::INFINITY, hi: f64::NEG_INFINITY, sticky: [], scale: Scale::Linear };
+                lx.add_all(x);
+                ly.add_all(y);
+                let longest = 0.0;
+                for i in 0..n { longest = longest.max((u[i] * u[i] + v[i] * v[i]).sqrt()); }
+                // A flat extent (points in a row) counts as a tenth of the view.
+                let dx = if lx.hi > lx.lo { lx.hi - lx.lo } else { (tx.u1 - tx.u0).abs() / 10.0 };
+                let dy = if ly.hi > ly.lo { ly.hi - ly.lo } else { (ty.u1 - ty.u0).abs() / 10.0 };
+                let spacing = if n > 1 { (dx * dy / (n as f64)).sqrt() } else { dx.min(dy) };
+                k = if longest > 0.0 { 0.9 * spacing / longest } else { 1.0 };
+            }
+            let shafts = Path::new();
+            let heads = Path::new();
+            for i in 0..n {
+                let (ax, ay) = (tx.at(x[i]), ty.at(y[i]));
+                let (bx, by) = (tx.at(x[i] + u[i] * k), ty.at(y[i] + v[i] * k));
+                arrow(shafts, heads, ax, ay, bx, by, 6.0);
+            }
+            let w = if s.width == s.width { s.width } else { 1.25 };
+            c.push(Item::Line { path: shafts, stroke: Stroke { color: fill, width: w, dash: [], round: false }, clip });
+            c.push(Item::Fill { path: heads, color: fill, clip });
+        }
+        Text { x, y, text } => {
+            let size = if s.font_size == s.font_size { s.font_size } else { c.theme.font_size };
+            c.text(tx.at(x), ty.at(y), text, size, fill, Anchor::Start, VAlign::Center);
+        }
+        Note { x, y, tx: nx, ty: ny, text } => {
+            let size = if s.font_size == s.font_size { s.font_size } else { c.theme.font_size };
+            let (ax, ay) = (tx.at(nx), ty.at(ny));
+            let (bx, by) = (tx.at(x), ty.at(y));
+            let w = c.width(text, size);
+            let anchor = if bx < ax - 1.0 { Anchor::End } else if bx > ax + 1.0 { Anchor::Start } else { Anchor::Middle };
+            c.text(ax, ay, text, size, fill, anchor, VAlign::Center);
+            // Start the arrow just outside the text box.
+            let (sx, sy) = edge_point(ax, ay, bx, by, anchor, w, size);
+            let shaft = Path::new();
+            let head = Path::new();
+            arrow(shaft, head, sx, sy, bx, by, 7.0);
+            c.push(Item::Line { path: shaft, stroke: Stroke { color: fill, width: 1.0, dash: [], round: false }, clip: 0 });
+            c.push(Item::Fill { path: head, color: fill, clip: 0 });
+        }
+        Rule { at, vertical } => {
+            let p = Path::new();
+            if vertical {
+                let q = tx.at(at);
+                p.move_to(q, plot.y);
+                p.line_to(q, plot.bottom());
+            } else {
+                let q = ty.at(at);
+                p.move_to(plot.x, q);
+                p.line_to(plot.right(), q);
+            }
+            let st = stroke(c, s, color);
+            if !(s.width == s.width) { st.width = 1.0; }
+            c.push(Item::Line { path: p, stroke: st, clip });
+        }
+        Span { lo, hi, vertical } => {
+            let p = if vertical {
+                let (a, b) = (tx.at(lo), tx.at(hi));
+                Path::rect(a.min(b), plot.y, (b - a).abs(), plot.h)
+            } else {
+                let (a, b) = (ty.at(lo), ty.at(hi));
+                Path::rect(plot.x, a.min(b), plot.w, (b - a).abs())
+            };
+            c.push(Item::Fill { path: p, color: fill, clip });
+        }
+    }
+}
+
+// Points in px; values the scale cannot show become NaN, which breaks a
+// polyline and drops a marker.
+fn px_points(x: List<f64>, y: List<f64>, tx: Tx, ty: Tx) -> (List<f64>, List<f64>) {
+    let n = x.len().min(y.len());
+    let xs: List<f64> = List::filled(n, 0.0);
+    let ys: List<f64> = List::filled(n, 0.0);
+    if tx.scale == Scale::Linear && ty.scale == Scale::Linear {
+        let ax = (tx.p1 - tx.p0) / (tx.u1 - tx.u0);
+        let bx = tx.p0 - tx.u0 * ax;
+        let ay = (ty.p1 - ty.p0) / (ty.u1 - ty.u0);
+        let by = ty.p0 - ty.u0 * ay;
+        for i in 0..n {
+            xs[i] = x[i] * ax + bx;
+            ys[i] = y[i] * ay + by;
+        }
+    } else {
+        for i in 0..n {
+            xs[i] = tx.at(x[i]);
+            ys[i] = ty.at(y[i]);
+        }
+    }
+    (xs, ys)
+}
+
+// A value's px, or the axis' near end when the scale cannot show it (a
+// bar's zero on a log axis).
+fn clamp_px(t: Tx, v: f64) -> f64 {
+    let p = t.at(v);
+    if p == p { p } else { t.p0 }
+}
+
+fn steps(xs: List<f64>, ys: List<f64>, at: StepAt) -> (List<f64>, List<f64>) {
+    let n = xs.len();
+    let ox: List<f64> = [];
+    let oy: List<f64> = [];
+    for i in 0..n {
+        if i == 0 {
+            ox.push(xs[0]);
+            oy.push(ys[0]);
+            continue;
+        }
+        match at {
+            Post => {
+                ox.push(xs[i]);
+                oy.push(ys[i - 1]);
+            }
+            Pre => {
+                ox.push(xs[i - 1]);
+                oy.push(ys[i]);
+            }
+            Mid => {
+                let m = (xs[i - 1] + xs[i]) / 2.0;
+                ox.push(m);
+                oy.push(ys[i - 1]);
+                ox.push(m);
+                oy.push(ys[i]);
+            }
+        }
+        ox.push(xs[i]);
+        oy.push(ys[i]);
+    }
+    (ox, oy)
+}
+
+fn pieces_path(p: contour::Pieces, gx: fn(f64) -> f64, gy: fn(f64) -> f64, closed: bool) -> Path {
+    let out = Path::new();
+    for k in 0..p.len() {
+        let s = p.starts[k];
+        let e = p.starts[k + 1];
+        if e - s < 2 { continue; }
+        out.move_to(gx(p.xy[2 * s]), gy(p.xy[2 * s + 1]));
+        for i in s + 1..e { out.line_to(gx(p.xy[2 * i]), gy(p.xy[2 * i + 1])); }
+        if closed { out.close(); }
+    }
+    out
+}
+
+// A shaft from a to b and a filled head at b, `head` px long at most.
+fn arrow(shaft: Path, heads: Path, ax: f64, ay: f64, bx: f64, by: f64, head: f64) {
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len = (dx * dx + dy * dy).sqrt();
+    if !(len > 0.0) { return; }
+    let (ux, uy) = (dx / len, dy / len);
+    let h = head.min(len * 0.4);
+    let w = h * 0.45;
+    let (cx, cy) = (bx - ux * h, by - uy * h);
+    shaft.move_to(ax, ay);
+    shaft.line_to(cx + ux * 0.5, cy + uy * 0.5);
+    heads.move_to(bx, by);
+    heads.line_to(cx - uy * w, cy + ux * w);
+    heads.line_to(cx + uy * w, cy - ux * w);
+    heads.close();
+}
+
+fn edge_point(ax: f64, ay: f64, bx: f64, by: f64, anchor: Anchor, w: f64, size: f64) -> (f64, f64) {
+    let (x0, x1) = match anchor {
+        Start => (ax, ax + w),
+        End => (ax - w, ax),
+        Middle => (ax - w / 2.0, ax + w / 2.0),
+    };
+    let cx = (x0 + x1) / 2.0;
+    let hw = (x1 - x0) / 2.0 + 3.0;
+    let hh = size * 0.6 + 3.0;
+    let dx = bx - cx;
+    let dy = by - ay;
+    let t = if dx == 0.0 && dy == 0.0 { 0.0 } else { (hw / dx.abs().max(1e-9)).min(hh / dy.abs().max(1e-9)).min(1.0) };
+    (cx + dx * t, ay + dy * t)
+}

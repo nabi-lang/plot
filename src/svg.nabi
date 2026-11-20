@@ -1,0 +1,301 @@
+//! The SVG backend. Coordinates print with at most two decimals and no
+//! trailing zeros, attributes in a fixed order, so equal figures give
+//! equal bytes. Text stays text (searchable, selectable, styled by the
+//! page's Geist when present); images embed as PNG data URIs.
+
+use pkg::layer::{Marker, marker_path};
+use pkg::path::{CLOSE, CUBIC, LINE, MOVE, QUAD};
+use pkg::png;
+use pkg::scene::{Anchor, Item, Scene, Stroke};
+use pkg::text::Run;
+use pkg::{Color, Path};
+use core::encoding::base64;
+
+/// The SVG document of a scene.
+pub(pkg) fn write(s: Scene) -> str {
+    let b = StrBuf::with_capacity(4096);
+    b.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+    num(b, s.width);
+    b.push_str("\" height=\"");
+    num(b, s.height);
+    b.push_str("\" viewBox=\"0 0 ");
+    num(b, s.width);
+    b.push(' ');
+    num(b, s.height);
+    b.push_str("\" font-family=\"");
+    b.push_str(escape(s.font_family));
+    b.push_str("\">\n");
+    if s.clips.len() > 1 {
+        b.push_str("<defs>\n");
+        for i in 1..s.clips.len() {
+            let r = s.clips[i];
+            b.push_str(f"<clipPath id=\"c{i}\"><rect x=\"");
+            num(b, r.x);
+            b.push_str("\" y=\"");
+            num(b, r.y);
+            b.push_str("\" width=\"");
+            num(b, r.w);
+            b.push_str("\" height=\"");
+            num(b, r.h);
+            b.push_str("\"/></clipPath>\n");
+        }
+        b.push_str("</defs>\n");
+    }
+    if s.background.a > 0 {
+        b.push_str("<rect width=\"100%\" height=\"100%\"");
+        paint(b, "fill", s.background);
+        b.push_str("/>\n");
+    }
+    let open = 0usize;
+    for it in s.items {
+        let clip = clip_of(it);
+        if clip != open {
+            if open != 0 { b.push_str("</g>\n"); }
+            if clip != 0 { b.push_str(f"<g clip-path=\"url(#c{clip})\">\n"); }
+            open = clip;
+        }
+        item(b, it);
+    }
+    if open != 0 { b.push_str("</g>\n"); }
+    b.push_str("</svg>\n");
+    b.to_str()
+}
+
+fn clip_of(it: Item) -> usize {
+    match it {
+        Fill { clip, .. } => clip,
+        Line { clip, .. } => clip,
+        Markers { clip, .. } => clip,
+        Image { clip, .. } => clip,
+        Text { .. } => 0,
+    }
+}
+
+fn item(b: StrBuf, it: Item) {
+    match it {
+        Fill { path, color, .. } => {
+            if path.is_empty() || color.a == 0 { return; }
+            b.push_str("<path d=\"");
+            data(b, path);
+            b.push('"');
+            paint(b, "fill", color);
+            b.push_str("/>\n");
+        }
+        Line { path, stroke, .. } => {
+            if path.is_empty() || stroke.color.a == 0 { return; }
+            b.push_str("<path d=\"");
+            data(b, path);
+            b.push_str("\" fill=\"none\"");
+            strokes(b, stroke);
+            b.push_str("/>\n");
+        }
+        Markers { xs, ys, shape, sizes, fills, edge, edge_width, .. } => markers(b, xs, ys, shape, sizes, fills, edge, edge_width),
+        Text { x, y, runs, size, color, anchor, rotate } => text(b, x, y, runs, size, color, anchor, rotate),
+        Image { x, y, w, h, cols, rows, rgba, .. } => {
+            let png = png::encode(rgba, cols, rows);
+            b.push_str("<image x=\"");
+            num(b, x);
+            b.push_str("\" y=\"");
+            num(b, y);
+            b.push_str("\" width=\"");
+            num(b, w);
+            b.push_str("\" height=\"");
+            num(b, h);
+            b.push_str("\" preserveAspectRatio=\"none\" style=\"image-rendering:pixelated;image-rendering:crisp-edges\" href=\"data:image/png;base64,");
+            b.push_str(base64::encode(png));
+            b.push_str("\"/>\n");
+        }
+    }
+}
+
+fn markers(b: StrBuf, xs: List<f64>, ys: List<f64>, shape: Marker, sizes: List<f64>, fills: List<Color>, edge: Color, edge_width: f64) {
+    if shape == Marker::Nothing || sizes.is_empty() || fills.is_empty() { return; }
+    let one_fill = fills.len() == 1;
+    let one_size = sizes.len() == 1;
+    b.push_str("<g");
+    if one_fill { paint(b, "fill", fills[0]); }
+    if edge_width > 0.0 && edge.a > 0 {
+        paint(b, "stroke", edge);
+        b.push_str(" stroke-width=\"");
+        num(b, edge_width);
+        b.push('"');
+    }
+    b.push_str(">\n");
+    let n = xs.len().min(ys.len());
+    for i in 0..n {
+        let (x, y) = (xs[i], ys[i]);
+        if !(x == x && y == y) { continue; }
+        let d = if one_size { sizes[0] } else if i < sizes.len() { sizes[i] } else { continue };
+        if !(d > 0.0) { continue; }
+        if shape == Marker::Circle {
+            b.push_str("<circle cx=\"");
+            num(b, x);
+            b.push_str("\" cy=\"");
+            num(b, y);
+            b.push_str("\" r=\"");
+            num(b, d / 2.0);
+            b.push('"');
+        } else {
+            b.push_str("<path d=\"");
+            data(b, marker_path(shape, x, y, d));
+            b.push('"');
+        }
+        if !one_fill && i < fills.len() { paint(b, "fill", fills[i]); }
+        b.push_str("/>\n");
+    }
+    b.push_str("</g>\n");
+}
+
+fn text(b: StrBuf, x: f64, y: f64, runs: List<Run>, size: f64, color: Color, anchor: Anchor, rotate: f64) {
+    b.push_str("<text x=\"");
+    num(b, x);
+    b.push_str("\" y=\"");
+    num(b, y);
+    b.push_str("\" font-size=\"");
+    num(b, size);
+    b.push('"');
+    paint(b, "fill", color);
+    match anchor {
+        Middle => b.push_str(" text-anchor=\"middle\""),
+        End => b.push_str(" text-anchor=\"end\""),
+        Start => {}
+    }
+    if rotate != 0.0 {
+        b.push_str(" transform=\"rotate(");
+        num(b, -rotate);
+        b.push(' ');
+        num(b, x);
+        b.push(' ');
+        num(b, y);
+        b.push_str(")\"");
+    }
+    b.push('>');
+    if runs.len() == 1 && runs[0].rise == 0.0 && runs[0].scale == 1.0 {
+        b.push_str(escape(runs[0].text));
+    } else {
+        // Shifts are relative: each tspan moves from the last baseline.
+        let at = 0.0;
+        for r in runs {
+            let want = -r.rise * size;
+            b.push_str("<tspan");
+            if r.scale != 1.0 {
+                b.push_str(" font-size=\"");
+                num(b, size * r.scale);
+                b.push('"');
+            }
+            if want != at {
+                b.push_str(" dy=\"");
+                num(b, want - at);
+                b.push('"');
+                at = want;
+            }
+            b.push('>');
+            b.push_str(escape(r.text));
+            b.push_str("</tspan>");
+        }
+    }
+    b.push_str("</text>\n");
+}
+
+fn strokes(b: StrBuf, s: Stroke) {
+    paint(b, "stroke", s.color);
+    b.push_str(" stroke-width=\"");
+    num(b, s.width);
+    b.push('"');
+    if !s.dash.is_empty() {
+        b.push_str(" stroke-dasharray=\"");
+        for i in 0..s.dash.len() {
+            if i > 0 { b.push(' '); }
+            num(b, s.dash[i]);
+        }
+        b.push('"');
+    }
+    if s.round {
+        b.push_str(" stroke-linecap=\"round\" stroke-linejoin=\"round\"");
+    } else {
+        b.push_str(" stroke-linecap=\"butt\" stroke-linejoin=\"miter\"");
+    }
+}
+
+fn paint(b: StrBuf, attr: str, c: Color) {
+    b.push(' ');
+    b.push_str(attr);
+    b.push_str(f"=\"#{c.r:02x}{c.g:02x}{c.b:02x}\"");
+    if c.a != 255 {
+        b.push(' ');
+        b.push_str(attr);
+        b.push_str("-opacity=\"");
+        num(b, ((c.a as f64) / 255.0 * 1000.0).round() / 1000.0);
+        b.push('"');
+    }
+}
+
+fn data(b: StrBuf, p: Path) {
+    let k = 0usize;
+    for v in p.verbs {
+        if v == MOVE {
+            b.push('M');
+            pair(b, p.pts[k], p.pts[k + 1]);
+            k += 2;
+        } else if v == LINE {
+            b.push('L');
+            pair(b, p.pts[k], p.pts[k + 1]);
+            k += 2;
+        } else if v == QUAD {
+            b.push('Q');
+            pair(b, p.pts[k], p.pts[k + 1]);
+            b.push(' ');
+            pair(b, p.pts[k + 2], p.pts[k + 3]);
+            k += 4;
+        } else if v == CUBIC {
+            b.push('C');
+            pair(b, p.pts[k], p.pts[k + 1]);
+            b.push(' ');
+            pair(b, p.pts[k + 2], p.pts[k + 3]);
+            b.push(' ');
+            pair(b, p.pts[k + 4], p.pts[k + 5]);
+            k += 6;
+        } else if v == CLOSE {
+            b.push('Z');
+        }
+    }
+}
+
+fn pair(b: StrBuf, x: f64, y: f64) {
+    num(b, x);
+    b.push(' ');
+    num(b, y);
+}
+
+/// `v` rounded to two decimals, without trailing zeros or `-0`.
+pub(pkg) fn num(b: StrBuf, v: f64) {
+    if !(v == v) || v.is_infinite() {
+        b.push('0');
+        return;
+    }
+    let r = (v * 100.0).round();
+    if r.abs() >= 9.0e15 {
+        b.push_str(f"{v.round()}");
+        return;
+    }
+    let n = r as i64;
+    if n < 0 { b.push('-'); }
+    let a = n.abs();
+    let whole = a / 100;
+    let frac = a % 100;
+    b.push_str(f"{whole}");
+    if frac != 0 {
+        b.push('.');
+        if frac % 10 == 0 {
+            b.push_str(f"{frac / 10}");
+        } else {
+            b.push_str(f"{frac:02}");
+        }
+    }
+}
+
+/// XML text with `&`, `<`, `>` and `"` escaped.
+pub(pkg) fn escape(s: str) -> str {
+    if !s.contains("&") && !s.contains("<") && !s.contains(">") && !s.contains("\"") { return s; }
+    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+}

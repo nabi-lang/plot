@@ -1,0 +1,46 @@
+// Byte-exact snapshots of SVG and terminal output; `PLOT_BLESS=1 nabi
+// test` from the repository root rewrites them after a deliberate
+// change.
+
+use pkg::tests::suite::snapshot;
+use pkg::{Axes, Bins, Colormap, Loc};
+
+fn wave() -> Axes {
+    let x = pkg::linspace(0.0, 6.0, 25);
+    let y: List<f64> = x.iter().map(|v| (v * 1.3).sin()).collect();
+    let z: List<f64> = x.iter().map(|v| (v * 0.7).cos() * 0.6).collect();
+    pkg::axes().line(x, y).label("$\\sin(1.3t)$").scatter(x, z).label("samples").xlabel("t [s]").ylabel("y").title("Wave").legend(Loc::LowerLeft)
+}
+
+#[test]
+fn svg_line() { snapshot("line.svg", include_str!("../snapshots/line.svg"), try! wave().size_px(400.0, 260.0).svg()); }
+
+#[test]
+fn svg_bars() {
+    let ax = pkg::axes().bars(["a", "b", "c"], [("x", [1.0, 2.0, 3.0]), ("y", [2.0, 1.0, 0.5])]).ylabel("count");
+    snapshot("bars.svg", include_str!("../snapshots/bars.svg"), try! ax.size_px(360.0, 240.0).svg());
+}
+
+#[test]
+fn svg_heatmap() {
+    let z = [[0.0, 1.0, 2.0], [1.0, 2.0, 3.0], [2.0, 3.0, 4.0]];
+    let ax = pkg::heatmap(z).cmap(Colormap::inferno()).colorbar("z").contour(z, [1.5, 2.5]).color("#ffffff");
+    snapshot("heatmap.svg", include_str!("../snapshots/heatmap.svg"), try! ax.size_px(300.0, 240.0).svg());
+}
+
+#[test]
+fn svg_panels() {
+    let x: List<f64> = List::from_fn(200, |i| 1.0 + ((i * 37) % 101) as f64);
+    let a = pkg::hist(x, Bins::Count(8)).title("hist");
+    let b = pkg::line([1, 10, 100, 1000], [3, 30, 200, 900]).log("xy").title("log");
+    snapshot("panels.svg", include_str!("../snapshots/panels.svg"), try! (a | b).size(520.0, 220.0).svg());
+}
+
+#[test]
+fn term_line() { snapshot("line.txt", include_str!("../snapshots/line.txt"), try! wave().term(cols: 64, rows: 18)); }
+
+#[test]
+fn term_bars() {
+    let ax = pkg::bar(["north", "south", "east"], [3.0, 5.0, 1.5]).title("bars");
+    snapshot("bars.txt", include_str!("../snapshots/bars.txt"), try! ax.term(cols: 40, rows: 12));
+}

@@ -1,0 +1,34 @@
+//! Operators. `+`, `|` and `/` need nothing: `a + b` overlays two Axes,
+//! `a | b` puts them side by side and `a / b` stacks them. This module
+//! adds `↦` ("maps to") for naming the columns of a table to plot,
+//! x first: `"date" ↦ "price"` reads as the function it draws. It binds
+//! like `==`, below arithmetic and `|`.
+
+/// Which column goes on which axis: `x ↦ y`.
+///
+/// ```nabi
+/// let f = "date" ↦ "price";
+/// assert(f.x == "date" && f.y == "price");
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+pub struct Formula {
+    pub x: str;
+    pub y: str;
+}
+
+/// The `↦` operator.
+///
+/// ```nabi
+/// use plot::ops::MapsTo;
+///
+/// assert(("t" ↦ "v").y == "v");
+/// ```
+pub trait MapsTo {
+    /// `x ↦ y`: plot column `y` against column `x`.
+    #[infix("↦", like = "==")]
+    fn maps_to(self, y: str) -> Formula;
+}
+
+impl MapsTo for str {
+    fn maps_to(self, y: str) -> Formula { Formula { x: self, y } }
+}

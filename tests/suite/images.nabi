@@ -1,0 +1,113 @@
+// PNG: deflate round trips through the test inflater, encoder output
+// read back pixel by pixel, rasterizer coverage.
+
+use pkg::png;
+use pkg::png::deflate;
+use pkg::raster;
+use pkg::svg;
+use pkg::tests::suite::decode;
+use pkg::tests::suite::decode::inflate;
+use pkg::tests::suite::{close, uniform};
+use pkg::{Color, Theme};
+
+fn bytes(n: usize, seed: u64, alphabet: usize) -> List<u8> {
+    let u = uniform(n, seed, 0.0, alphabet as f64);
+    List::from_fn(n, |i| u[i] as u8)
+}
+
+#[test]
+fn deflate_round_trips() {
+    let cases: List<List<u8>> = [
+        [],
+        [7],
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".as_bytes().to_list(),
+        "the quick brown fox jumps over the lazy dog, the quick brown fox".as_bytes().to_list(),
+        bytes(100000, 1, 256),
+        bytes(100000, 2, 4),
+        List::filled(300000, 0u8),
+    ];
+    for c in cases {
+        let z = deflate::zlib(c);
+        let back = inflate(z);
+        assert(back == c);
+    }
+    // Compressible input shrinks.
+    assert(deflate::zlib(List::filled(100000, 9u8)).len() < 400);
+    assert(deflate::zlib(bytes(100000, 3, 4)).len() < 40000);
+}
+
+#[test]
+fn checksums() {
+    assert(png::crc32("123456789".as_bytes().to_list()) == 0xcbf43926);
+    assert(png::crc32([]) == 0);
+    assert(deflate::adler32("Wikipedia".as_bytes().to_list()) == 0x11e60398);
+    assert(deflate::adler32([]) == 1);
+}
+
+#[test]
+fn png_round_trips_pixels() {
+    // RGBA with alpha, odd size, all filters exercised by noise and runs.
+    let (w, h) = (37usize, 23usize);
+    let noise = bytes(w * h * 4, 4, 256);
+    let px: List<u8> = List::from_fn(w * h * 4, |i| if (i / 4) % 7 < 3 { noise[i] } else { ((i * 13) % 251) as u8 });
+    let f = png::encode(px, w, h);
+    let (w2, h2, back) = decode::png(f);
+    assert(w2 == w && h2 == h && back == px);
+    // Opaque pixels are written as RGB.
+    let op: List<u8> = List::from_fn(16 * 4, |i| if i % 4 == 3 { 255 } else { (i * 7) as u8 });
+    let f = png::encode(op, 4, 4);
+    assert(f[25] == 2);
+    let (_, _, back) = decode::png(f);
+    assert(back == op);
+}
+
+#[test]
+fn figure_png_pixels() {
+    // A span over the whole plot in a known colour: the centre pixel is
+    // that colour blended with the background; edges are smooth.
+    let ax = pkg::axes().xlim(0.0, 1.0).ylim(0.0, 1.0).vspan(0.0, 1.0).color("#ff0000").alpha(1.0).size_px(200.0, 150.0);
+    let (w, h, px) = decode::png(try! ax.png());
+    assert(w == 200 && h == 150);
+    let at = |x: usize, y: usize| -> Color { let o = 4 * (y * w + x); Color::rgba(px[o], px[o + 1], px[o + 2], px[o + 3]) };
+    assert(at(100, 75) == Color::rgb(255, 0, 0));
+    assert(at(0, 0) == Theme::light().background);
+    // HiDPI doubles the pixels.
+    let (w2, h2, _) = decode::png(try! ax.png(scale: 2.0));
+    assert(w2 == 400 && h2 == 300);
+}
+
+#[test]
+fn coverage_is_exact_for_boxes() {
+    // A rectangle covering half of a column of pixels gives half alpha.
+    let s = pkg::scene::Scene {
+        width: 4.0,
+        height: 2.0,
+        background: Color::clear(),
+        font_family: "",
+        clips: [pkg::scene::Rect { x: 0.0, y: 0.0, w: 4.0, h: 2.0 }],
+        items: [pkg::scene::Item::Fill { path: pkg::Path::rect(0.5, 0.0, 2.0, 2.0), color: Color::rgb(0, 0, 0), clip: 0 }],
+    };
+    let img = raster::render(s, 1.0);
+    assert(img.at(0, 0).a == 128 && img.at(1, 0).a == 255 && img.at(2, 1).a == 128 && img.at(3, 1).a == 0);
+    // A triangle's coverage sums to its area.
+    let p = pkg::Path::new();
+    p.move_to(0.0, 0.0);
+    p.line_to(4.0, 0.0);
+    p.line_to(0.0, 2.0);
+    p.close();
+    let t = raster::render(pkg::scene::Scene { width: 4.0, height: 2.0, background: Color::clear(), font_family: "", clips: s.clips, items: [pkg::scene::Item::Fill { path: p, color: Color::rgb(0, 0, 0), clip: 0 }] }, 1.0);
+    let sum = 0.0;
+    for i in 0..8 { sum += (t.rgba[4 * i + 3] as f64) / 255.0; }
+    close(sum, 4.0, 0.02, "triangle area");
+}
+
+#[test]
+fn svg_numbers() {
+    let b = StrBuf::new();
+    for v in [0.0, -0.0, 1.0, -1.25, 3.14159, 0.005, -0.004, 1e7, 12.1] {
+        svg::num(b, v);
+        b.push(' ');
+    }
+    assert(b.to_str() == "0 0 1 -1.25 3.14 0.01 0 10000000 12.1 ");
+    assert(svg::escape("a<b & \"c\"") == "a&lt;b &amp; &quot;c&quot;");
+}

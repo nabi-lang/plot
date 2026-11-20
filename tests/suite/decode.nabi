@@ -1,0 +1,209 @@
+// A minimal PNG reader to check the encoder: zlib inflate (stored,
+// fixed and dynamic blocks), chunk CRCs, the five row filters, 8-bit
+// RGB and RGBA.
+
+use pkg::png::crc32;
+
+struct In {
+    d: List<u8>;
+    pos: usize;
+    bit: u64;
+    n: u64;
+}
+
+impl In {
+    fn need(ref self, k: u64) {
+        while self.n < k {
+            let b = if self.pos < self.d.len() { self.d[self.pos] } else { panic("inflate: input ended early") };
+            self.pos += 1;
+            self.bit = self.bit | ((b as u64) << self.n);
+            self.n += 8;
+        }
+    }
+
+    fn bits(ref self, k: u64) -> u32 {
+        if k == 0 { return 0; }
+        self.need(k);
+        let v = (self.bit & ((1u64 << k) - 1)) as u32;
+        self.bit = self.bit >> k;
+        self.n -= k;
+        v
+    }
+}
+
+// A canonical Huffman decoder: counts per length and symbols in order.
+struct Huff {
+    count: List<u32>;
+    sym: List<u32>;
+}
+
+fn huff(lens: List<u32>) -> Huff {
+    let count: List<u32> = List::filled(16, 0);
+    for l in lens { count[l as usize] += 1; }
+    count[0] = 0;
+    let offs: List<u32> = List::filled(16, 0);
+    for i in 1..16 { offs[i] = offs[i - 1] + count[i - 1]; }
+    let sym: List<u32> = List::filled(lens.len(), 0);
+    for s in 0..lens.len() {
+        let l = lens[s] as usize;
+        if l != 0 {
+            sym[offs[l] as usize] = s as u32;
+            offs[l] += 1;
+        }
+    }
+    Huff { count, sym }
+}
+
+fn decode_sym(ref r: In, h: Huff) -> u32 {
+    let code = 0i64;
+    let first = 0i64;
+    let index = 0i64;
+    for len in 1..16 {
+        code = code | (r.bits(1) as i64);
+        let c = h.count[len] as i64;
+        if code - c < first { return h.sym[(index + (code - first)) as usize]; }
+        index += c;
+        first += c;
+        first = first << 1;
+        code = code << 1;
+    }
+    panic("inflate: bad code")
+}
+
+const LBASE: [u32; 29] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+const LEXTRA: [u32; 29] = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const DBASE: [u32; 30] = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
+const DEXTRA: [u32; 30] = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+const ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+
+/// The bytes of a zlib stream; panics on a bad header or checksum.
+pub fn inflate(z: List<u8>) -> List<u8> {
+    if z.len() < 6 || ((z[0] as u32) * 256 + (z[1] as u32)) % 31 != 0 || z[0] & 15 != 8 { panic("inflate: bad zlib header"); }
+    let r = In { d: z, pos: 2, bit: 0, n: 0 };
+    let out: List<u8> = [];
+    loop {
+        let last = r.bits(1);
+        let kind = r.bits(2);
+        if kind == 0 {
+            r.bit = 0;
+            r.n = 0;
+            let len = (r.d[r.pos] as usize) | ((r.d[r.pos + 1] as usize) << 8);
+            r.pos += 4;
+            for i in 0..len { out.push(r.d[r.pos + i]); }
+            r.pos += len;
+        } else {
+            let (lit, dist) = if kind == 1 {
+                let ll: List<u32> = List::from_fn(288, |i| if i < 144 { 8 } else if i < 256 { 9 } else if i < 280 { 7 } else { 8 });
+                (huff(ll), huff(List::filled(30, 5)))
+            } else {
+                let hlit = r.bits(5) as usize + 257;
+                let hdist = r.bits(5) as usize + 1;
+                let hclen = r.bits(4) as usize + 4;
+                let cl: List<u32> = List::filled(19, 0);
+                for i in 0..hclen { cl[ORDER[i]] = r.bits(3); }
+                let ch = huff(cl);
+                let lens: List<u32> = [];
+                while lens.len() < hlit + hdist {
+                    let s = decode_sym(ref r, ch);
+                    if s < 16 {
+                        lens.push(s);
+                    } else if s == 16 {
+                        let prev = lens[lens.len() - 1];
+                        for _k in 0..3 + r.bits(2) { lens.push(prev); }
+                    } else if s == 17 {
+                        for _k in 0..3 + r.bits(3) { lens.push(0); }
+                    } else {
+                        for _k in 0..11 + r.bits(7) { lens.push(0); }
+                    }
+                }
+                (huff(lens[0:hlit].to_list()), huff(lens[hlit:].to_list()))
+            };
+            loop {
+                let s = decode_sym(ref r, lit);
+                if s < 256 {
+                    out.push(s as u8);
+                } else if s == 256 {
+                    break;
+                } else {
+                    let k = (s - 257) as usize;
+                    let len = LBASE[k] + r.bits(LEXTRA[k] as u64);
+                    let j = decode_sym(ref r, dist) as usize;
+                    let d = (DBASE[j] + r.bits(DEXTRA[j] as u64)) as usize;
+                    if d > out.len() { panic("inflate: distance too far back"); }
+                    let start = out.len() - d;
+                    for i in 0..len as usize { out.push(out[start + i]); }
+                }
+            }
+        }
+        if last == 1 { break; }
+    }
+    // Adler-32 after the last byte boundary.
+    let p = r.pos - (r.n / 8) as usize;
+    let want = ((r.d[p] as u32) << 24) | ((r.d[p + 1] as u32) << 16) | ((r.d[p + 2] as u32) << 8) | (r.d[p + 3] as u32);
+    if want != pkg::png::deflate::adler32(out) { panic("inflate: Adler-32 mismatch"); }
+    out
+}
+
+fn be32(b: List<u8>, i: usize) -> u32 {
+    ((b[i] as u32) << 24) | ((b[i + 1] as u32) << 16) | ((b[i + 2] as u32) << 8) | (b[i + 3] as u32)
+}
+
+/// A PNG file as (width, height, RGBA bytes); panics on anything this
+/// encoder does not write.
+pub fn png(f: List<u8>) -> (usize, usize, List<u8>) {
+    let sig: List<u8> = [137, 80, 78, 71, 13, 10, 26, 10];
+    for i in 0..8 { if f[i] != sig[i] { panic("png: bad signature"); } }
+    let i = 8usize;
+    let w = 0usize;
+    let h = 0usize;
+    let color = 0u8;
+    let idat: List<u8> = [];
+    loop {
+        let len = be32(f, i) as usize;
+        let kind = str::from_utf8_lossy(f[i + 4:i + 8].to_list());
+        let body: List<u8> = f[i + 4:i + 8 + len].to_list();
+        if crc32(body) != be32(f, i + 8 + len) { panic(f"png: bad CRC in {kind}"); }
+        let data: List<u8> = f[i + 8:i + 8 + len].to_list();
+        if kind == "IHDR" {
+            w = be32(data, 0) as usize;
+            h = be32(data, 4) as usize;
+            if data[8] != 8 { panic("png: not 8-bit"); }
+            color = data[9];
+        } else if kind == "IDAT" {
+            for v in data { idat.push(v); }
+        } else if kind == "IEND" {
+            break;
+        }
+        i += 12 + len;
+    }
+    let bpp = if color == 6 { 4usize } else if color == 2 { 3usize } else { panic("png: colour type") };
+    let raw = inflate(idat);
+    let stride = w * bpp;
+    if raw.len() != (stride + 1) * h { panic(f"png: {raw.len()} bytes for {w}x{h}"); }
+    let prev: List<u8> = List::filled(stride, 0u8);
+    let out: List<u8> = List::filled(w * h * 4, 255u8);
+    for y in 0..h {
+        let ft = raw[y * (stride + 1)];
+        let cur: List<u8> = List::filled(stride, 0u8);
+        for x in 0..stride {
+            let v = raw[y * (stride + 1) + 1 + x] as i32;
+            let a = if x >= bpp { cur[x - bpp] as i32 } else { 0 };
+            let b = prev[x] as i32;
+            let c = if x >= bpp { prev[x - bpp] as i32 } else { 0 };
+            let p = match ft {
+                0 => 0,
+                1 => a,
+                2 => b,
+                3 => (a + b) / 2,
+                4 => pkg::png::paeth(a, b, c),
+                _ => panic("png: bad filter"),
+            };
+            cur[x] = ((v + p) & 255) as u8;
+        }
+        for x in 0..w {
+            for k in 0..bpp { out[(y * w + x) * 4 + k] = cur[x * bpp + k]; }
+        }
+        prev = cur;
+    }
+    (w, h, out)
+}

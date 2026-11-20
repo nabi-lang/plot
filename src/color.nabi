@@ -1,0 +1,233 @@
+//! sRGB colours with alpha, CSS-style parsing, and the colour cycles a
+//! theme draws series colours from.
+
+use pkg::PlotError;
+
+/// An sRGB colour with alpha, 8 bits a channel.
+///
+/// ```nabi
+/// use plot::Color;
+///
+/// let c = try Color::parse("#0072b2");
+/// assert(c == Color::rgb(0, 114, 178));
+/// assert(c.with_alpha(0.5).to_hex() == "#0072b280");
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Color {
+    pub r: u8;
+    pub g: u8;
+    pub b: u8;
+    pub a: u8;
+}
+
+/// What a builder takes for a colour: a `Color`, a string that
+/// `Color::parse` reads or `"C0"` to `"C9"` (the theme's cycle), or
+/// `none` for the next colour of the cycle.
+///
+/// ```nabi
+/// let ax = plot::line([0, 1], [0, 1]).color("C2").line([0, 1], [1, 0]).color(plot::Color::rgb(9, 9, 9));
+/// assert((try ax.svg()).contains("#090909"));
+/// ```
+pub type ColorSpec = Color | str | none;
+
+impl Color {
+    /// An opaque colour.
+    ///
+    /// ```nabi
+    /// assert(plot::Color::rgb(1, 2, 3).a == 255);
+    /// ```
+    pub fn rgb(r: u8, g: u8, b: u8) -> Color { Color { r, g, b, a: 255 } }
+
+    /// A colour with alpha (`255` is opaque).
+    ///
+    /// ```nabi
+    /// assert(plot::Color::rgba(1, 2, 3, 0).opacity() == 0.0);
+    /// ```
+    pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color { Color { r, g, b, a } }
+
+    /// From channels in [0, 1], rounded to the nearest 8-bit value.
+    ///
+    /// ```nabi
+    /// assert(plot::Color::unit(1.0, 0.5, 0.0) == plot::Color::rgb(255, 128, 0));
+    /// ```
+    pub fn unit(r: f64, g: f64, b: f64) -> Color { Color { r: byte(r), g: byte(g), b: byte(b), a: 255 } }
+
+    /// Fully transparent black.
+    ///
+    /// ```nabi
+    /// assert(plot::Color::clear().a == 0);
+    /// ```
+    pub fn clear() -> Color { Color { r: 0, g: 0, b: 0, a: 0 } }
+
+    /// Reads `#rgb`, `#rrggbb`, `#rrggbbaa`, a CSS basic colour name
+    /// (`"red"`, `"gray"`, ...), `"none"` or `"transparent"`.
+    ///
+    /// ```nabi
+    /// use plot::Color;
+    ///
+    /// assert((try Color::parse("#f00")) == Color::rgb(255, 0, 0));
+    /// assert((try Color::parse("navy")).b == 128);
+    /// assert((try? Color::parse("#12")) is none);
+    /// ```
+    pub fn parse(s: str) throws (PlotError) -> Color {
+        let t = s.trim().to_lowercase();
+        if t.starts_with("#") {
+            let h = t[1:];
+            let n = h.len();
+            if n == 3 || n == 6 || n == 8 {
+                let v: List<u32> = [];
+                for c in h.chars() {
+                    match c.to_digit(16) {
+                        d: u32 => v.push(d),
+                        none => throw PlotError::Color { spec: s },
+                    }
+                }
+                if n == 3 { return Color::rgb((v[0] * 17) as u8, (v[1] * 17) as u8, (v[2] * 17) as u8); }
+                let a = if n == 8 { (v[6] * 16 + v[7]) as u8 } else { 255u8 };
+                return Color::rgba((v[0] * 16 + v[1]) as u8, (v[2] * 16 + v[3]) as u8, (v[4] * 16 + v[5]) as u8, a);
+            }
+            throw PlotError::Color { spec: s };
+        }
+        match named(t) {
+            c: Color => c,
+            none => throw PlotError::Color { spec: s },
+        }
+    }
+
+    /// `#rrggbb`, or `#rrggbbaa` when not opaque.
+    ///
+    /// ```nabi
+    /// assert(plot::Color::rgb(255, 128, 0).to_hex() == "#ff8000");
+    /// ```
+    pub fn to_hex(self) -> str {
+        let s = f"#{self.r:02x}{self.g:02x}{self.b:02x}";
+        if self.a == 255 { s } else { f"{s}{self.a:02x}" }
+    }
+
+    /// The same colour with alpha `a` in [0, 1].
+    ///
+    /// ```nabi
+    /// assert(plot::Color::rgb(0, 0, 0).with_alpha(1.0).a == 255);
+    /// ```
+    pub fn with_alpha(self, a: f64) -> Color { Color { r: self.r, g: self.g, b: self.b, a: byte(a) } }
+
+    /// Alpha as a fraction in [0, 1].
+    ///
+    /// ```nabi
+    /// assert(plot::Color::rgba(0, 0, 0, 255).opacity() == 1.0);
+    /// ```
+    pub fn opacity(self) -> f64 { (self.a as f64) / 255.0 }
+
+    /// `t` of the way from `self` to `o`, channel by channel (alpha too).
+    ///
+    /// ```nabi
+    /// use plot::Color;
+    ///
+    /// assert(Color::rgb(0, 0, 0).mix(Color::rgb(255, 255, 255), 0.5) == Color::rgb(128, 128, 128));
+    /// ```
+    pub fn mix(self, o: Color, t: f64) -> Color {
+        Color {
+            r: lerp(self.r, o.r, t),
+            g: lerp(self.g, o.g, t),
+            b: lerp(self.b, o.b, t),
+            a: lerp(self.a, o.a, t),
+        }
+    }
+
+    /// Relative luminance (WCAG), 0 for black to 1 for white.
+    ///
+    /// ```nabi
+    /// assert(plot::Color::rgb(0, 0, 0).luminance() == 0.0);
+    /// ```
+    pub fn luminance(self) -> f64 {
+        0.2126 * linear(self.r) + 0.7152 * linear(self.g) + 0.0722 * linear(self.b)
+    }
+}
+
+impl Display for Color {
+    fn fmt(self, ref f: Formatter) throws (FmtError) { try f.write_str(self.to_hex()) }
+}
+
+fn byte(x: f64) -> u8 {
+    if !(x > 0.0) { return 0; }
+    if x >= 1.0 { return 255; }
+    (x * 255.0 + 0.5).floor() as u8
+}
+
+fn lerp(a: u8, b: u8, t: f64) -> u8 {
+    let v = (a as f64) + ((b as f64) - (a as f64)) * t;
+    (v + 0.5).floor().max(0.0).min(255.0) as u8
+}
+
+fn linear(c: u8) -> f64 {
+    let v = (c as f64) / 255.0;
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055) ** 2.4 }
+}
+
+fn named(t: str) -> Color | none {
+    match t {
+        "black" => Color::rgb(0, 0, 0),
+        "white" => Color::rgb(255, 255, 255),
+        "red" => Color::rgb(255, 0, 0),
+        "green" => Color::rgb(0, 128, 0),
+        "blue" => Color::rgb(0, 0, 255),
+        "yellow" => Color::rgb(255, 255, 0),
+        "cyan" | "aqua" => Color::rgb(0, 255, 255),
+        "magenta" | "fuchsia" => Color::rgb(255, 0, 255),
+        "gray" | "grey" => Color::rgb(128, 128, 128),
+        "silver" => Color::rgb(192, 192, 192),
+        "maroon" => Color::rgb(128, 0, 0),
+        "olive" => Color::rgb(128, 128, 0),
+        "lime" => Color::rgb(0, 255, 0),
+        "teal" => Color::rgb(0, 128, 128),
+        "navy" => Color::rgb(0, 0, 128),
+        "purple" => Color::rgb(128, 0, 128),
+        "orange" => Color::rgb(255, 165, 0),
+        "brown" => Color::rgb(165, 42, 42),
+        "pink" => Color::rgb(255, 192, 203),
+        "gold" => Color::rgb(255, 215, 0),
+        "none" | "transparent" => Color::clear(),
+        _ => none,
+    }
+}
+
+/// The Okabe-Ito palette (Okabe and Ito 2008), safe for the common
+/// colour-vision deficiencies; the default cycle. Ordered for contrast
+/// on a light background: blue, vermillion, bluish green, orange, sky
+/// blue, reddish purple, yellow, black.
+///
+/// ```nabi
+/// assert(plot::color::okabe_ito()[0].to_hex() == "#0072b2");
+/// ```
+pub fn okabe_ito() -> List<Color> {
+    [
+        Color::rgb(0, 114, 178),
+        Color::rgb(213, 94, 0),
+        Color::rgb(0, 158, 115),
+        Color::rgb(230, 159, 0),
+        Color::rgb(86, 180, 233),
+        Color::rgb(204, 121, 167),
+        Color::rgb(240, 228, 66),
+        Color::rgb(0, 0, 0),
+    ]
+}
+
+/// Tableau 10 (the 2016 palette), as `matplotlib`'s `tab10` successor.
+///
+/// ```nabi
+/// assert(plot::color::tableau10().len() == 10);
+/// ```
+pub fn tableau10() -> List<Color> {
+    [
+        Color::rgb(78, 121, 167),
+        Color::rgb(242, 142, 43),
+        Color::rgb(225, 87, 89),
+        Color::rgb(118, 183, 178),
+        Color::rgb(89, 161, 79),
+        Color::rgb(237, 201, 72),
+        Color::rgb(176, 122, 161),
+        Color::rgb(255, 157, 167),
+        Color::rgb(156, 117, 95),
+        Color::rgb(186, 176, 172),
+    ]
+}

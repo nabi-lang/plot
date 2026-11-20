@@ -1,0 +1,195 @@
+// Strokes as fills: each segment a rectangle, joins and caps as
+// polygons, all wound the same way so overlaps add and clamp instead of
+// cancelling under the nonzero rule. Dashes split the polyline first.
+
+use pkg::path::Flat;
+
+/// Edges of closed polygons: polygon `i` is points `starts[i]..starts[i + 1]`.
+pub(pkg) struct Polys {
+    pub(pkg) xy: List<f64>;
+    pub(pkg) starts: List<usize>;
+}
+
+impl Polys {
+    pub(pkg) fn new() -> Polys { Polys { xy: [], starts: [0] } }
+
+    fn quad(self, ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64, dx: f64, dy: f64) {
+        for v in [ax, ay, bx, by, cx, cy, dx, dy] { self.xy.push(v); }
+        self.starts.push(self.xy.len() / 2);
+    }
+
+    // A triangle wound like the segment rectangles (negative area).
+    fn tri(self, ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) {
+        let area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+        if area > 0.0 {
+            for v in [ax, ay, cx, cy, bx, by] { self.xy.push(v); }
+        } else {
+            for v in [ax, ay, bx, by, cx, cy] { self.xy.push(v); }
+        }
+        self.starts.push(self.xy.len() / 2);
+    }
+
+    // A disc, wound like the rectangles.
+    fn disc(self, x: f64, y: f64, r: f64) {
+        let n = ((r * 2.0).ceil() as usize).max(8).min(32);
+        for k in 0..n {
+            let a = -2.0 * f64::PI * (k as f64) / (n as f64);
+            self.xy.push(x + r * a.cos());
+            self.xy.push(y + r * a.sin());
+        }
+        self.starts.push(self.xy.len() / 2);
+    }
+}
+
+/// The outline of a stroke of width `w` along the polylines.
+pub(pkg) fn outline(f: Flat, w: f64, dash: List<f64>, round: bool) -> Polys {
+    let out = Polys::new();
+    let hw = w / 2.0;
+    let pieces = if dash.is_empty() { f } else { dashed(f, dash) };
+    for s in 0..pieces.starts.len() - 1 {
+        let a = pieces.starts[s];
+        let b = pieces.starts[s + 1];
+        let closed = pieces.closed[s];
+        if b <= a { continue; }
+        let xy = pieces.xy;
+        let n = b - a;
+        if n == 1 {
+            if round { out.disc(xy[2 * a], xy[2 * a + 1], hw); }
+            continue;
+        }
+        let last = if closed { n } else { n - 1 };
+        let pnx = 0.0;
+        let pny = 0.0;
+        let has_prev = false;
+        let first_nx = 0.0;
+        let first_ny = 0.0;
+        for k in 0..last {
+            let i = a + k;
+            let j = if k + 1 == n { a } else { i + 1 };
+            let (x0, y0, x1, y1) = (xy[2 * i], xy[2 * i + 1], xy[2 * j], xy[2 * j + 1]);
+            let dx = x1 - x0;
+            let dy = y1 - y0;
+            let len = (dx * dx + dy * dy).sqrt();
+            if !(len > 1e-9) { continue; }
+            let nx = -dy / len * hw;
+            let ny = dx / len * hw;
+            out.quad(x0 + nx, y0 + ny, x1 + nx, y1 + ny, x1 - nx, y1 - ny, x0 - nx, y0 - ny);
+            if has_prev {
+                join(out, x0, y0, pnx, pny, nx, ny, hw, round);
+            } else {
+                first_nx = nx;
+                first_ny = ny;
+            }
+            has_prev = true;
+            pnx = nx;
+            pny = ny;
+        }
+        if closed && has_prev {
+            join(out, xy[2 * a], xy[2 * a + 1], pnx, pny, first_nx, first_ny, hw, round);
+        } else if round && has_prev {
+            out.disc(xy[2 * a], xy[2 * a + 1], hw);
+            out.disc(xy[2 * (b - 1)], xy[2 * (b - 1) + 1], hw);
+        }
+    }
+    out
+}
+
+fn join(out: Polys, x: f64, y: f64, ax: f64, ay: f64, bx: f64, by: f64, hw: f64, round: bool) {
+    let cross = ax * by - ay * bx;
+    let dot = ax * bx + ay * by;
+    if cross.abs() < 1e-12 && dot > 0.0 { return; }
+    if round && hw > 1.5 {
+        out.disc(x, y, hw);
+        return;
+    }
+    // The outer side of the turn gets the wedge; a miter where it is
+    // short, else a bevel.
+    let s = if cross > 0.0 { -1.0 } else { 1.0 };
+    let (p1x, p1y) = (x + s * ax, y + s * ay);
+    let (p2x, p2y) = (x + s * bx, y + s * by);
+    let mx = ax + bx;
+    let my = ay + by;
+    let ml = (mx * mx + my * my).sqrt();
+    if !round && ml > 1e-9 {
+        let cos_half = ml / (2.0 * hw);
+        if cos_half > 0.25 {
+            let k = hw / cos_half / ml;
+            let (qx, qy) = (x + s * mx * k, y + s * my * k);
+            out.tri(x, y, p1x, p1y, qx, qy);
+            out.tri(x, y, qx, qy, p2x, p2y);
+            return;
+        }
+    }
+    out.tri(x, y, p1x, p1y, p2x, p2y);
+}
+
+// Splits polylines into dashes: `dash` alternates on and off lengths.
+fn dashed(f: Flat, dash: List<f64>) -> Flat {
+    let total = dash.iter().sum();
+    if !(total > 0.0) { return f; }
+    let xy: List<f64> = [];
+    let starts: List<usize> = [];
+    let closed: List<bool> = [];
+    for s in 0..f.starts.len() - 1 {
+        let a = f.starts[s];
+        let b = f.starts[s + 1];
+        let n = b - a;
+        if n < 2 { continue; }
+        let segs = if f.closed[s] { n } else { n - 1 };
+        let k = 0usize;
+        let left = dash[0];
+        let on = true;
+        if on {
+            starts.push(xy.len() / 2);
+            closed.push(false);
+            xy.push(f.xy[2 * a]);
+            xy.push(f.xy[2 * a + 1]);
+        }
+        for t in 0..segs {
+            let i = a + t;
+            let j = if t + 1 == n { a } else { i + 1 };
+            let (x0, y0, x1, y1) = (f.xy[2 * i], f.xy[2 * i + 1], f.xy[2 * j], f.xy[2 * j + 1]);
+            let len = ((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)).sqrt();
+            let pos = 0.0;
+            while len - pos > left {
+                pos += left;
+                let u = pos / len;
+                let (px, py) = (x0 + (x1 - x0) * u, y0 + (y1 - y0) * u);
+                if on {
+                    xy.push(px);
+                    xy.push(py);
+                } else {
+                    starts.push(xy.len() / 2);
+                    closed.push(false);
+                    xy.push(px);
+                    xy.push(py);
+                }
+                on = !on;
+                k = (k + 1) % dash.len();
+                left = dash[k];
+            }
+            left -= len - pos;
+            if on {
+                xy.push(x1);
+                xy.push(y1);
+            }
+        }
+    }
+    // Drop the empty pieces an "off" run leaves.
+    let ox: List<f64> = [];
+    let os: List<usize> = [];
+    let oc: List<bool> = [];
+    for i in 0..starts.len() {
+        let a = starts[i];
+        let b = if i + 1 < starts.len() { starts[i + 1] } else { xy.len() / 2 };
+        if b - a < 2 { continue; }
+        os.push(ox.len() / 2);
+        oc.push(false);
+        for p in a..b {
+            ox.push(xy[2 * p]);
+            ox.push(xy[2 * p + 1]);
+        }
+    }
+    os.push(ox.len() / 2);
+    Flat { xy: ox, starts: os, closed: oc }
+}

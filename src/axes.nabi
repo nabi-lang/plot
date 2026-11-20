@@ -1,0 +1,1187 @@
+//! The Axes builder: one plot area with its layers, axes, labels and
+//! legend. Every method returns a changed copy, so calls chain; layer
+//! methods (`line`, `scatter`, ...) add a layer, and style methods
+//! (`label`, `color`, `width`, ...) change the last one.
+
+use pkg::layer::{BoxStats, Dash, Layer, Loc, Mark, Marker, Side, StepAt, Style};
+use pkg::stat;
+use pkg::stat::Bins;
+use pkg::{ColorSpec, Colormap, Data, Figure, Format, Grid, PlotError, Scale, Theme};
+
+/// One axis of an Axes.
+///
+/// ```nabi
+/// let ax = plot::axes().xlabel("t").xlim(0.0, 10.0);
+/// assert((try ax.svg()).contains(">t<"));
+/// ```
+#[derive(Clone, Debug)]
+pub struct Axis {
+    pub(pkg) label: str;
+    pub(pkg) scale: Scale;
+    pub(pkg) lo: f64;
+    pub(pkg) hi: f64;
+    pub(pkg) ticks: List<f64> | none;
+    pub(pkg) tick_labels: List<str> | none;
+    pub(pkg) format: Format;
+    pub(pkg) margin: f64;
+    pub(pkg) inverted: bool;
+    pub(pkg) categories: List<str>;
+    pub(pkg) grid: bool | none;
+    pub(pkg) minor: bool;
+}
+
+impl Axis {
+    pub(pkg) fn new() -> Axis {
+        Axis {
+            label: "",
+            scale: Scale::Linear,
+            lo: f64::NAN,
+            hi: f64::NAN,
+            ticks: none,
+            tick_labels: none,
+            format: Format::Auto,
+            margin: 0.05,
+            inverted: false,
+            categories: [],
+            grid: none,
+            minor: false,
+        }
+    }
+}
+
+/// A plot area: layers drawn against an x axis and a left (and maybe a
+/// right) y axis, with a title, a legend and a colorbar. Build it with
+/// `plot::axes()` or start from a layer function such as `plot::line`;
+/// render it with `svg`, `png`, `term` or `save`, or place it in a
+/// figure with `|` (side by side) and `/` (stacked).
+///
+/// ```nabi
+/// let x = plot::linspace(0.0, 6.28, 50);
+/// let y = x.iter().map(|v| v.sin()).collect::<List<f64>>();
+/// let ax = plot::axes()
+///     .line(x, y).label("sin")
+///     .xlabel("t [s]").ylabel("$\\alpha$")
+///     .title("A sine");
+/// let svg = try ax.svg();
+/// assert(svg.starts_with("<svg") && svg.contains(">sin<"));
+/// ```
+#[derive(Clone, Debug)]
+pub struct Axes {
+    pub(pkg) layers: List<Layer>;
+    pub(pkg) x: Axis;
+    pub(pkg) y: Axis;
+    pub(pkg) y2: Axis;
+    pub(pkg) side: Side;
+    pub(pkg) title: str;
+    pub(pkg) legend: Loc | none;
+    pub(pkg) legend_on: bool | none;
+    pub(pkg) aspect: f64;
+    pub(pkg) colorbar: bool;
+    pub(pkg) colorbar_label: str;
+    pub(pkg) theme: Theme | none;
+    pub(pkg) size: (f64, f64) | none;
+    pub(pkg) errors: List<PlotError>;
+}
+
+/// An empty Axes.
+///
+/// ```nabi
+/// assert((try plot::axes().svg()).contains("</svg>"));
+/// ```
+pub fn axes() -> Axes {
+    Axes {
+        layers: [],
+        x: Axis::new(),
+        y: Axis::new(),
+        y2: Axis::new(),
+        side: Side::Left,
+        title: "",
+        legend: none,
+        legend_on: none,
+        aspect: 0.0,
+        colorbar: false,
+        colorbar_label: "",
+        theme: none,
+        size: none,
+        errors: [],
+    }
+}
+
+fn layer(mark: Mark, side: Side) -> Layer { Layer { mark, style: Style::new(), label: "", side } }
+
+fn same(what: str, a: usize, b: usize) -> PlotError | none {
+    if a == b { none } else { PlotError::Length { what: f"{what}: {a} x values and {b} y values" } }
+}
+
+impl Axes {
+    // A copy whose lists are its own.
+    fn own(self) -> Axes {
+        let a = self;
+        a.layers = self.layers.clone();
+        a.errors = self.errors.clone();
+        a
+    }
+
+    fn push(self, m: Mark) -> Axes {
+        let a = self.own();
+        a.layers.push(layer(m, self.side));
+        a
+    }
+
+    fn fail(self, e: PlotError | none) -> Axes {
+        match e {
+            e: PlotError => {
+                let a = self.own();
+                a.errors.push(e);
+                a
+            }
+            none => self,
+        }
+    }
+
+    // Changes the last layer's style; a no-op on an empty Axes.
+    fn restyle(self, f: fn(Style) -> Style) -> Axes {
+        let n = self.layers.len();
+        if n == 0 { return self; }
+        let a = self.own();
+        let l = a.layers[n - 1];
+        l.style = f(l.style);
+        a.layers[n - 1] = l;
+        a
+    }
+
+    /// The number of layers.
+    ///
+    /// ```nabi
+    /// assert(plot::line([0, 1], [1, 0]).scatter([0, 1], [0, 1]).len() == 2);
+    /// ```
+    pub fn len(self) -> usize { self.layers.len() }
+
+    /// A line through the points, in order. NaN values break the line.
+    ///
+    /// ```nabi
+    /// let svg = try plot::axes().line([0, 1, 2], [1.0, 3.0, 2.0]).svg();
+    /// assert(svg.contains("<path"));
+    /// ```
+    pub fn line<X: Data, Y: Data>(self, x: X, y: Y) -> Axes {
+        let (xs, ys) = (x.values(), y.values());
+        self.push(Mark::Line { x: xs, y: ys, step: none }).fail(same("line", xs.len(), ys.len()))
+    }
+
+    /// A line against the index: `y[i]` at `x = i`.
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().line_y([3.0, 1.0, 2.0]).svg()).contains("<path"));
+    /// ```
+    pub fn line_y<Y: Data>(self, y: Y) -> Axes {
+        let ys = y.values();
+        self.push(Mark::Line { x: List::from_fn(ys.len(), |i| i as f64), y: ys, step: none })
+    }
+
+    /// A step line: the value changes at each `x` as `at` says.
+    ///
+    /// ```nabi
+    /// use plot::StepAt;
+    ///
+    /// assert((try plot::axes().step([0, 1, 2], [1, 3, 2], StepAt::Post).svg()).contains("<path"));
+    /// ```
+    pub fn step<X: Data, Y: Data>(self, x: X, y: Y, at: StepAt = StepAt::Post) -> Axes {
+        let (xs, ys) = (x.values(), y.values());
+        self.push(Mark::Line { x: xs, y: ys, step: at }).fail(same("step", xs.len(), ys.len()))
+    }
+
+    /// Markers at the points. Chain `sizes` or `values` to size or
+    /// colour each by a value.
+    ///
+    /// ```nabi
+    /// let svg = try plot::axes().scatter([1, 2, 3], [3, 1, 2]).svg();
+    /// assert(svg.contains("<circle"));
+    /// ```
+    pub fn scatter<X: Data, Y: Data>(self, x: X, y: Y) -> Axes {
+        let (xs, ys) = (x.values(), y.values());
+        let a = self.push(Mark::Scatter { x: xs, y: ys, sizes: [], values: [] }).fail(same("scatter", xs.len(), ys.len()));
+        a.restyle(|s| {
+            let t = s;
+            t.marker = Marker::Circle;
+            t
+        })
+    }
+
+    /// Bars of `heights` at categories `labels`, one per label.
+    ///
+    /// ```nabi
+    /// let svg = try plot::axes().bar(["a", "b", "c"], [3, 5, 2]).svg();
+    /// assert(svg.contains(">b<"));
+    /// ```
+    pub fn bar<H: Data>(self, labels: List<str>, heights: H) -> Axes {
+        let h = heights.values();
+        let a = self.categorize(labels);
+        let xs: List<f64> = List::from_fn(labels.len(), |i| slot(a.x.categories, labels[i]));
+        let n = h.len();
+        a.push(Mark::Bars { x: xs, h, base: List::filled(n, 0.0), width: 0.8, horizontal: false }).fail(same("bar", labels.len(), n))
+    }
+
+    /// Bars of `heights` at numeric positions `x`, `width` wide in x
+    /// units.
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().bar_at([1.0, 2.5], [3, 4], width: 0.5).svg()).contains("<path"));
+    /// ```
+    pub fn bar_at<X: Data, H: Data>(self, x: X, heights: H, width: f64 = 0.8) -> Axes {
+        let (xs, h) = (x.values(), heights.values());
+        let n = h.len();
+        self.push(Mark::Bars { x: xs, h, base: List::filled(n, 0.0), width, horizontal: false }).fail(same("bar_at", xs.len(), n))
+    }
+
+    /// Horizontal bars of `widths` at categories `labels` up the y axis.
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().barh(["low", "high"], [1, 3]).svg()).contains(">high<"));
+    /// ```
+    pub fn barh<H: Data>(self, labels: List<str>, widths: H) -> Axes {
+        let h = widths.values();
+        let a = self.own();
+        a.y = cat_axis(a.y, labels);
+        let ys: List<f64> = List::from_fn(labels.len(), |i| slot(a.y.categories, labels[i]));
+        let n = h.len();
+        a.push(Mark::Bars { x: ys, h, base: List::filled(n, 0.0), width: 0.8, horizontal: true }).fail(same("barh", labels.len(), n))
+    }
+
+    /// Several series of bars over the same categories, side by side
+    /// (grouped) or on top of each other (`stacked`). Each series is a
+    /// layer with its name as the legend label.
+    ///
+    /// ```nabi
+    /// let ax = plot::axes().bars(["2023", "2024"], [("north", [3.0, 4.0]), ("south", [2.0, 5.0])], stacked: true);
+    /// assert((try ax.svg()).contains(">south<"));
+    /// ```
+    pub fn bars(self, labels: List<str>, series: List<(str, List<f64>)>, stacked: bool = false) -> Axes {
+        let a = self.categorize(labels);
+        let n = labels.len();
+        let k = series.len().max(1);
+        let pos: List<f64> = List::from_fn(n, |i| slot(a.x.categories, labels[i]));
+        let base: List<f64> = List::filled(n, 0.0);
+        let group = 0.8;
+        let w = if stacked { group } else { group / (k as f64) };
+        for j in 0..series.len() {
+            let (name, h) = series[j];
+            if h.len() != n {
+                a = a.fail(PlotError::Length { what: f"bars series \"{name}\": {n} labels and {h.len()} heights" });
+                continue;
+            }
+            let xs: List<f64> = if stacked {
+                pos.clone()
+            } else {
+                List::from_fn(n, |i| pos[i] - group / 2.0 + w * (j as f64 + 0.5))
+            };
+            a = a.push(Mark::Bars { x: xs, h: h.clone(), base: base.clone(), width: w, horizontal: false }).label(name);
+            if stacked {
+                for i in 0..n { base[i] += h[i]; }
+            }
+        }
+        a
+    }
+
+    fn categorize(self, labels: List<str>) -> Axes {
+        let a = self.own();
+        a.x = cat_axis(a.x, labels);
+        a
+    }
+
+    /// A histogram of `data` in `bins` (NumPy's rules; `Bins::Auto` by
+    /// default). `density` scales the bars to unit area.
+    ///
+    /// ```nabi
+    /// use plot::Bins;
+    ///
+    /// let svg = try plot::axes().hist([1.0, 2.0, 2.5, 3.0, 3.1, 3.2], Bins::Count(3)).svg();
+    /// assert(svg.contains("<path"));
+    /// ```
+    pub fn hist<D: Data>(self, data: D, bins: Bins = Bins::Auto, density: bool = false) -> Axes {
+        let v = data.values();
+        let e = stat::edges(v, bins);
+        let c = stat::counts(v, e);
+        let k = c.len();
+        let total = c.iter().sum();
+        let xs: List<f64> = List::from_fn(k, |i| (e[i] + e[i + 1]) / 2.0);
+        let h: List<f64> = List::from_fn(k, |i| if density && total > 0.0 { c[i] / total / (e[i + 1] - e[i]) } else { c[i] });
+        let widths = if k > 0 { e[1] - e[0] } else { 1.0 };
+        let a = self.push(Mark::Bars { x: xs, h, base: List::filled(k, 0.0), width: widths, horizontal: false });
+        // Uneven edges: one bar per bin with its own width.
+        if k > 0 && !even(e) {
+            let b = self.own();
+            for i in 0..k {
+                b = b.push(Mark::Bars { x: [xs[i]], h: [h[i]], base: [0.0], width: e[i + 1] - e[i], horizontal: false });
+            }
+            return b;
+        }
+        a.restyle(|s| {
+            let t = s;
+            t.alpha = 0.85;
+            t
+        })
+    }
+
+    /// The region between `y1` and `y2` over `x` (`fill_between`).
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().fill_between([0, 1, 2], [0, 1, 0], [1, 2, 1]).svg()).contains("<path"));
+    /// ```
+    pub fn fill_between<X: Data, A: Data, B: Data>(self, x: X, y1: A, y2: B) -> Axes {
+        let (xs, a, b) = (x.values(), y1.values(), y2.values());
+        let s = self.push(Mark::Fill { x: xs, y1: a, y2: b, outline: false }).fail(same("fill_between y1", xs.len(), a.len())).fail(same("fill_between y2", xs.len(), b.len()));
+        s.restyle(|st| {
+            let t = st;
+            t.alpha = 0.35;
+            t
+        })
+    }
+
+    /// The area between `y` and zero, with the curve drawn on top.
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().area([0, 1, 2], [1, 3, 2]).svg()).contains("fill-opacity"));
+    /// ```
+    pub fn area<X: Data, Y: Data>(self, x: X, y: Y) -> Axes {
+        let (xs, ys) = (x.values(), y.values());
+        let s = self.push(Mark::Fill { x: xs, y1: List::filled(xs.len(), 0.0), y2: ys, outline: true }).fail(same("area", xs.len(), ys.len()));
+        s.restyle(|st| {
+            let t = st;
+            t.alpha = 0.35;
+            t
+        })
+    }
+
+    /// Error bars: `yerr` symmetric about `y`.
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().errorbar([1, 2], [2.0, 3.0], [0.5, 0.2]).svg()).contains("<path"));
+    /// ```
+    pub fn errorbar<X: Data, Y: Data, E: Data>(self, x: X, y: Y, yerr: E) -> Axes {
+        let (xs, ys, e) = (x.values(), y.values(), yerr.values());
+        let lo: List<f64> = List::from_fn(e.len(), |i| e[i]);
+        self.push(Mark::ErrorBars { x: xs, y: ys, ylo: lo, yhi: e.clone(), xlo: [], xhi: [] })
+            .fail(same("errorbar", xs.len(), ys.len()))
+            .fail(same("errorbar yerr", ys.len(), e.len()))
+            .restyle(|s| {
+                let t = s;
+                t.marker = Marker::Circle;
+                t
+            })
+    }
+
+    /// Error bars with separate lower and upper extents in y and
+    /// optional extents in x (empty lists for none).
+    ///
+    /// ```nabi
+    /// let ax = plot::axes().errorbar_xy([1, 2], [2.0, 3.0], [0.2, 0.3], [0.5, 0.1], xlo: [0.1, 0.1], xhi: [0.2, 0.2]);
+    /// assert((try ax.svg()).contains("<path"));
+    /// ```
+    pub fn errorbar_xy<X: Data, Y: Data>(self, x: X, y: Y, ylo: List<f64>, yhi: List<f64>, xlo: List<f64> = [], xhi: List<f64> = []) -> Axes {
+        let (xs, ys) = (x.values(), y.values());
+        self.push(Mark::ErrorBars { x: xs, y: ys, ylo: ylo.clone(), yhi: yhi.clone(), xlo: xlo.clone(), xhi: xhi.clone() })
+            .fail(same("errorbar_xy", xs.len(), ys.len()))
+            .restyle(|s| {
+                let t = s;
+                t.marker = Marker::Circle;
+                t
+            })
+    }
+
+    /// Box plots of groups of values, at categories `labels` (or 1, 2,
+    /// ... when empty): quartile boxes, median lines, whiskers to 1.5
+    /// IQR and the outliers beyond.
+    ///
+    /// ```nabi
+    /// let ax = plot::axes().boxplot([[1.0, 2.0, 3.0, 4.0], [2.0, 3.0, 9.0]], ["a", "b"]);
+    /// assert((try ax.svg()).contains(">a<"));
+    /// ```
+    pub fn boxplot(self, groups: List<List<f64>>, labels: List<str> = []) -> Axes {
+        let names = names_for(groups.len(), labels);
+        let a = self.categorize(names);
+        let pos: List<f64> = List::from_fn(names.len(), |i| slot(a.x.categories, names[i]));
+        let stats: List<BoxStats> = groups.iter().map(|g| stat::box_stats(g)).collect();
+        for i in 0..groups.len() {
+            if stat::sorted_finite(groups[i]).is_empty() { a = a.fail(PlotError::Empty { what: f"boxplot group {i}" }); }
+        }
+        a.push(Mark::Boxes { pos, stats, width: 0.6 }).fail(same("boxplot labels", groups.len(), names.len()))
+    }
+
+    /// Violin plots: each group's kernel density (Gaussian, Scott's
+    /// bandwidth) mirrored about its category, with a median tick.
+    ///
+    /// ```nabi
+    /// let ax = plot::axes().violin([[1.0, 2.0, 2.5, 3.0], [2.0, 4.0, 4.5]]);
+    /// assert((try ax.svg()).contains("<path"));
+    /// ```
+    pub fn violin(self, groups: List<List<f64>>, labels: List<str> = []) -> Axes {
+        let names = names_for(groups.len(), labels);
+        let a = self.categorize(names);
+        let pos: List<f64> = List::from_fn(names.len(), |i| slot(a.x.categories, names[i]));
+        let at: List<List<f64>> = [];
+        let dens: List<List<f64>> = [];
+        let med: List<f64> = [];
+        for g in groups {
+            let (x, d) = stat::kde(g, 100);
+            at.push(x);
+            dens.push(d);
+            med.push(stat::quantile(stat::sorted_finite(g), 0.5));
+        }
+        a.push(Mark::Violins { pos, at, dens, width: 0.8, medians: med }).restyle(|s| {
+            let t = s;
+            t.alpha = 0.6;
+            t
+        })
+    }
+
+    /// A heatmap of a grid: cell `(i, j)` coloured by `z[i][j]`, column
+    /// `j` at x from 0, row `i` at y from 0 (rows go up). `extent` sets
+    /// the covered rectangle `(x0, x1, y0, y1)` instead. Chain `cmap`,
+    /// `vmin`/`vmax` and `colorbar`.
+    ///
+    /// ```nabi
+    /// let svg = try plot::axes().heatmap([[1.0, 2.0], [3.0, 4.0]]).colorbar("").svg();
+    /// assert(svg.contains("data:image/png;base64,"));
+    /// ```
+    pub fn heatmap<G: Grid>(self, z: G, extent: (f64, f64, f64, f64) | none = none) -> Axes {
+        let (v, rows, cols) = z.grid();
+        let e = extent ?? (-0.5, (cols as f64) - 0.5, -0.5, (rows as f64) - 0.5);
+        let a = self.push(Mark::Image { z: v, rows, cols, extent: e });
+        let a = a.fail(grid_ok("heatmap", rows, cols));
+        a.with_margins(0.0)
+    }
+
+    /// Like `heatmap` with row 0 at the top, as an image is stored.
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().imshow([[0.0, 1.0], [1.0, 0.0]]).svg()).contains("<image"));
+    /// ```
+    pub fn imshow<G: Grid>(self, z: G) -> Axes {
+        let (v, rows, cols) = z.grid();
+        let a = self.push(Mark::Image { z: v, rows, cols, extent: (-0.5, (cols as f64) - 0.5, -0.5, (rows as f64) - 0.5) }).fail(grid_ok("imshow", rows, cols));
+        let b = a.with_margins(0.0).own();
+        b.y.inverted = true;
+        b.aspect = 1.0;
+        b
+    }
+
+    /// Contour lines of a grid at `levels` (nice values over the data
+    /// range when empty), over `extent` as for `heatmap` (grid points at
+    /// integer positions by default).
+    ///
+    /// ```nabi
+    /// let z = [[0.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 0.0]];
+    /// assert((try plot::axes().contour(z, [0.5, 1.5]).svg()).contains("<path"));
+    /// ```
+    pub fn contour<G: Grid>(self, z: G, levels: List<f64> = [], extent: (f64, f64, f64, f64) | none = none) -> Axes {
+        let (v, rows, cols) = z.grid();
+        let e = extent ?? (0.0, (cols as f64) - 1.0, 0.0, (rows as f64) - 1.0);
+        self.push(Mark::Contour { z: v, rows, cols, extent: e, levels: levels.clone(), filled: false }).fail(grid_ok("contour", rows, cols))
+    }
+
+    /// Filled contour bands of a grid between `levels`.
+    ///
+    /// ```nabi
+    /// let z = [[0.0, 1.0, 0.0], [1.0, 2.0, 1.0], [0.0, 1.0, 0.0]];
+    /// assert((try plot::axes().contourf(z, [0.0, 1.0, 2.0]).colorbar().svg()).contains("<path"));
+    /// ```
+    pub fn contourf<G: Grid>(self, z: G, levels: List<f64> = [], extent: (f64, f64, f64, f64) | none = none) -> Axes {
+        let (v, rows, cols) = z.grid();
+        let e = extent ?? (0.0, (cols as f64) - 1.0, 0.0, (rows as f64) - 1.0);
+        self.push(Mark::Contour { z: v, rows, cols, extent: e, levels: levels.clone(), filled: true }).fail(grid_ok("contourf", rows, cols)).with_margins(0.0)
+    }
+
+    /// Arrows from `(x, y)` along `(u, v)`. `scale` multiplies the
+    /// vectors (data units per vector unit); 0 fits the longest arrow to
+    /// the spacing of the points.
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().quiver([0, 1], [0, 0], [1, 0], [0, 1]).svg()).contains("<path"));
+    /// ```
+    pub fn quiver<X: Data, Y: Data, U: Data, V: Data>(self, x: X, y: Y, u: U, v: V, scale: f64 = 0.0) -> Axes {
+        let (xs, ys, us, vs) = (x.values(), y.values(), u.values(), v.values());
+        self.push(Mark::Quiver { x: xs, y: ys, u: us, v: vs, scale })
+            .fail(same("quiver", xs.len(), ys.len()))
+            .fail(same("quiver u", xs.len(), us.len()))
+            .fail(same("quiver v", xs.len(), vs.len()))
+    }
+
+    /// Text at a data position, starting there (math markup allowed).
+    ///
+    /// ```nabi
+    /// assert((try plot::axes().line([0, 1], [0, 1]).text(0.5, 0.5, "mid").svg()).contains(">mid<"));
+    /// ```
+    pub fn text(self, x: f64, y: f64, s: str) -> Axes { self.push(Mark::Text { x, y, text: s }) }
+
+    /// Text at `(tx, ty)` with an arrow pointing at `(x, y)`.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1, 2], [0, 2, 1]).annotate("top", 1.0, 2.0, 1.5, 2.2).svg()).contains(">top<"));
+    /// ```
+    pub fn annotate(self, s: str, x: f64, y: f64, tx: f64, ty: f64) -> Axes {
+        self.push(Mark::Note { x, y, tx, ty, text: s })
+    }
+
+    /// A horizontal line across the plot at `y`.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 2]).hline(1.0).dash(plot::Dash::Dashed).svg()).contains("stroke-dasharray"));
+    /// ```
+    pub fn hline(self, y: f64) -> Axes { self.push(Mark::Rule { at: y, vertical: false }) }
+
+    /// A vertical line across the plot at `x`.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 2]).vline(0.5).svg()).contains("<path"));
+    /// ```
+    pub fn vline(self, x: f64) -> Axes { self.push(Mark::Rule { at: x, vertical: true }) }
+
+    /// A horizontal band between `y0` and `y1`.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 2]).hspan(0.5, 1.0).svg()).contains("fill-opacity"));
+    /// ```
+    pub fn hspan(self, y0: f64, y1: f64) -> Axes {
+        self.push(Mark::Span { lo: y0, hi: y1, vertical: false }).restyle(|s| {
+            let t = s;
+            t.alpha = 0.2;
+            t
+        })
+    }
+
+    /// A vertical band between `x0` and `x1`.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 2]).vspan(0.2, 0.4).color("C3").svg()).contains("fill-opacity"));
+    /// ```
+    pub fn vspan(self, x0: f64, x1: f64) -> Axes {
+        self.push(Mark::Span { lo: x0, hi: x1, vertical: true }).restyle(|s| {
+            let t = s;
+            t.alpha = 0.2;
+            t
+        })
+    }
+
+    /// The last layer's legend label.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).label("data").svg()).contains(">data<"));
+    /// ```
+    pub fn label(self, s: str) -> Axes {
+        let n = self.layers.len();
+        if n == 0 { return self; }
+        let a = self.own();
+        let l = a.layers[n - 1];
+        l.label = s;
+        a.layers[n - 1] = l;
+        a
+    }
+
+    /// The last layer's colour: a `Color`, `"#rrggbb"`, a name, or `"C0"`
+    /// to `"C9"` for the theme's cycle.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).color("#d55e00").svg()).contains("#d55e00"));
+    /// ```
+    pub fn color(self, c: ColorSpec) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.color = c;
+            t
+        })
+    }
+
+    /// The last layer's edge colour (markers, bars, boxes).
+    ///
+    /// ```nabi
+    /// assert((try plot::scatter([0, 1], [0, 1]).edge("black").svg()).contains("stroke=\"#000000\""));
+    /// ```
+    pub fn edge(self, c: ColorSpec) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.edge = c;
+            t
+        })
+    }
+
+    /// The last layer's opacity, 0 to 1.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).alpha(0.5).svg()).contains("stroke-opacity=\"0.5\""));
+    /// ```
+    pub fn alpha(self, a: f64) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.alpha = a.max(0.0).min(1.0);
+            t
+        })
+    }
+
+    /// The last layer's line width in px.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).width(3.0).svg()).contains("stroke-width=\"3\""));
+    /// ```
+    pub fn width(self, w: f64) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.width = w;
+            t
+        })
+    }
+
+    /// The last layer's dash pattern.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).dash(plot::Dash::Dotted).svg()).contains("stroke-dasharray"));
+    /// ```
+    pub fn dash(self, d: Dash) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.dash = d;
+            t
+        })
+    }
+
+    /// The last layer's marker; on a line it marks every point.
+    ///
+    /// ```nabi
+    /// use plot::Marker;
+    ///
+    /// assert((try plot::line([0, 1], [0, 1]).marker(Marker::Square).svg()).contains("Z"));
+    /// ```
+    pub fn marker(self, m: Marker) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.marker = m;
+            t
+        })
+    }
+
+    /// The last layer's marker size in px (diameter), or its text size.
+    ///
+    /// ```nabi
+    /// assert((try plot::scatter([0, 1], [0, 1]).size(10.0).svg()).contains("r=\"5\""));
+    /// ```
+    pub fn size(self, px: f64) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.size = px;
+            t.font_size = px;
+            t
+        })
+    }
+
+    /// Per-point marker sizes (diameters in px) for the last scatter.
+    ///
+    /// ```nabi
+    /// assert((try plot::scatter([0, 1], [0, 1]).sizes([4.0, 12.0]).svg()).contains("r=\"6\""));
+    /// ```
+    pub fn sizes<S: Data>(self, s: S) -> Axes {
+        let v = s.values();
+        let n = self.layers.len();
+        if n == 0 { return self; }
+        let a = self.own();
+        let l = a.layers[n - 1];
+        if let Scatter { x, y, values, .. } = l.mark {
+            l.mark = Mark::Scatter { x, y, sizes: v, values };
+            a.layers[n - 1] = l;
+            return a.fail(same("scatter sizes", x.len(), v.len()));
+        }
+        a
+    }
+
+    /// Per-point values for the last scatter, coloured through the
+    /// colormap (`cmap`, the theme's by default).
+    ///
+    /// ```nabi
+    /// let ax = plot::scatter([0, 1, 2], [0, 1, 2]).values([0.0, 0.5, 1.0]).colorbar("v");
+    /// assert((try ax.svg()).contains("#fde725"));
+    /// ```
+    pub fn values<V: Data>(self, c: V) -> Axes {
+        let v = c.values();
+        let n = self.layers.len();
+        if n == 0 { return self; }
+        let a = self.own();
+        let l = a.layers[n - 1];
+        if let Scatter { x, y, sizes, .. } = l.mark {
+            l.mark = Mark::Scatter { x, y, sizes, values: v };
+            a.layers[n - 1] = l;
+            return a.fail(same("scatter values", x.len(), v.len()));
+        }
+        a
+    }
+
+    /// The colormap of the last layer (heatmap, contour, coloured
+    /// scatter).
+    ///
+    /// ```nabi
+    /// assert((try plot::heatmap([[0.0, 1.0]]).cmap(plot::Colormap::gray()).svg()).contains("<image"));
+    /// ```
+    pub fn cmap(self, m: Colormap) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.cmap = m;
+            t
+        })
+    }
+
+    /// The value range the colormap spans for the last layer (data range
+    /// by default).
+    ///
+    /// ```nabi
+    /// assert((try plot::heatmap([[0.0, 1.0]]).range(-1.0, 1.0).colorbar("").svg()).contains("\u{2212}1"));
+    /// ```
+    pub fn range(self, vmin: f64, vmax: f64) -> Axes {
+        self.restyle(|s| {
+            let t = s;
+            t.vmin = vmin;
+            t.vmax = vmax;
+            t
+        })
+    }
+
+    /// The x axis title.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).xlabel("time [s]").svg()).contains(">time [s]<"));
+    /// ```
+    pub fn xlabel(self, s: str) -> Axes {
+        let a = self;
+        a.x.label = s;
+        a
+    }
+
+    /// The y axis title (the right axis after `right()`).
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).ylabel("$\\Delta p$").svg()).contains("\u{394}p"));
+    /// ```
+    pub fn ylabel(self, s: str) -> Axes {
+        let a = self;
+        if a.side == Side::Right { a.y2.label = s; } else { a.y.label = s; }
+        a
+    }
+
+    /// The title above the plot.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).title("Ramp").svg()).contains(">Ramp<"));
+    /// ```
+    pub fn title(self, s: str) -> Axes {
+        let a = self;
+        a.title = s;
+        a
+    }
+
+    /// The x view limits; NaN leaves one automatic.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).xlim(0.0, 4.0).svg()).contains(">4<"));
+    /// ```
+    pub fn xlim(self, lo: f64, hi: f64) -> Axes {
+        let a = self;
+        a.x.lo = lo;
+        a.x.hi = hi;
+        a
+    }
+
+    /// The y view limits (the right axis after `right()`).
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).ylim(f64::NAN, 3.0).svg()).contains(">3.0<"));
+    /// ```
+    pub fn ylim(self, lo: f64, hi: f64) -> Axes {
+        let a = self;
+        if a.side == Side::Right {
+            a.y2.lo = lo;
+            a.y2.hi = hi;
+        } else {
+            a.y.lo = lo;
+            a.y.hi = hi;
+        }
+        a
+    }
+
+    /// The x axis scale.
+    ///
+    /// ```nabi
+    /// use plot::Scale;
+    ///
+    /// let svg = try plot::axes().line([1, 10, 100], [1, 2, 3]).xscale(Scale::Log(10.0)).svg();
+    /// assert(svg.contains(">10<") && svg.contains("<tspan"));
+    /// ```
+    pub fn xscale(self, s: Scale) -> Axes {
+        let a = self;
+        a.x.scale = s;
+        a
+    }
+
+    /// The y axis scale (the right axis after `right()`).
+    ///
+    /// ```nabi
+    /// use plot::Scale;
+    ///
+    /// let ax = plot::line([0, 1, 2], [1, 100, 10000]).yscale(Scale::Log(10.0));
+    /// assert((try ax.svg()).contains(">4</tspan>"));
+    /// ```
+    pub fn yscale(self, s: Scale) -> Axes {
+        let a = self;
+        if a.side == Side::Right { a.y2.scale = s; } else { a.y.scale = s; }
+        a
+    }
+
+    /// Log scales in base 10: `"x"`, `"y"` or `"xy"`.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([1, 10, 100], [1, 10, 100]).log("xy").svg()).contains(">2</tspan>"));
+    /// ```
+    pub fn log(self, axes: str = "y") -> Axes {
+        let a = self;
+        if axes.contains("x") { a.x.scale = Scale::Log(10.0); }
+        if axes.contains("y") { a = a.yscale(Scale::Log(10.0)); }
+        a
+    }
+
+    /// A date x axis: x values are seconds since 1970-01-01 UTC
+    /// (`plot::date(2024, 3, 1)`).
+    ///
+    /// ```nabi
+    /// let t = [plot::date(2024, 1, 1), plot::date(2024, 6, 1), plot::date(2024, 12, 1)];
+    /// assert((try plot::axes().line(t, [1, 3, 2]).dates().svg()).contains("2024-"));
+    /// ```
+    pub fn dates(self) -> Axes { self.xscale(Scale::Date) }
+
+    /// The x tick label format.
+    ///
+    /// ```nabi
+    /// use plot::Format;
+    ///
+    /// assert((try plot::axes().line([0, 2000], [0, 1]).xformat(Format::Si).svg()).contains(">1.5k<"));
+    /// ```
+    pub fn xformat(self, f: Format) -> Axes {
+        let a = self;
+        a.x.format = f;
+        a
+    }
+
+    /// The y tick label format (the right axis after `right()`).
+    ///
+    /// ```nabi
+    /// use plot::Format;
+    ///
+    /// assert((try plot::line([0, 1], [0.0, 0.5]).yformat(Format::Percent).svg()).contains(">50%<"));
+    /// ```
+    pub fn yformat(self, f: Format) -> Axes {
+        let a = self;
+        if a.side == Side::Right { a.y2.format = f; } else { a.y.format = f; }
+        a
+    }
+
+    /// Fixed x ticks, labelled by the format (or by `labels`).
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 2], [0, 1]).xticks([0.0, 1.0, 2.0], ["lo", "mid", "hi"]).svg()).contains(">mid<"));
+    /// ```
+    pub fn xticks(self, at: List<f64>, labels: List<str> | none = none) -> Axes {
+        let a = self;
+        a.x.ticks = at.clone();
+        a.x.tick_labels = labels;
+        a
+    }
+
+    /// Fixed y ticks (the right axis after `right()`).
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 2], [0, 1]).yticks([0.0, 1.0]).svg()).contains(">1<"));
+    /// ```
+    pub fn yticks(self, at: List<f64>, labels: List<str> | none = none) -> Axes {
+        let a = self;
+        if a.side == Side::Right {
+            a.y2.ticks = at.clone();
+            a.y2.tick_labels = labels;
+        } else {
+            a.y.ticks = at.clone();
+            a.y.tick_labels = labels;
+        }
+        a
+    }
+
+    /// Minor ticks on both axes.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).minor().svg()).contains("stroke-width=\"0.75\""));
+    /// ```
+    pub fn minor(self) -> Axes {
+        let a = self;
+        a.x.minor = true;
+        a.y.minor = true;
+        a.y2.minor = true;
+        a
+    }
+
+    /// Grid lines on (or off) for both axes.
+    ///
+    /// ```nabi
+    /// assert(!(try plot::line([0, 1], [0, 1]).grid(false).svg()).contains("#e9e4e6"));
+    /// ```
+    pub fn grid(self, on: bool = true) -> Axes {
+        let a = self;
+        a.x.grid = on;
+        a.y.grid = on;
+        a
+    }
+
+    /// The fraction of the data range added on each side (0.05 by
+    /// default).
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).with_margins(0.0).svg()).contains("<path"));
+    /// ```
+    pub fn with_margins(self, m: f64) -> Axes {
+        let a = self;
+        a.x.margin = m;
+        a.y.margin = m;
+        a.y2.margin = m;
+        a
+    }
+
+    /// Flips the x axis.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).invert_x().svg()).contains("<path"));
+    /// ```
+    pub fn invert_x(self) -> Axes {
+        let a = self;
+        a.x.inverted = !a.x.inverted;
+        a
+    }
+
+    /// Flips the y axis.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).invert_y().svg()).contains("<path"));
+    /// ```
+    pub fn invert_y(self) -> Axes {
+        let a = self;
+        a.y.inverted = !a.y.inverted;
+        a
+    }
+
+    /// Fixes y units per x unit on screen: 1.0 for equal scales.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).aspect(1.0).svg()).contains("<path"));
+    /// ```
+    pub fn aspect(self, r: f64) -> Axes {
+        let a = self;
+        a.aspect = r;
+        a
+    }
+
+    /// Later layers and `ylabel`, `ylim`, `yscale`, ... go to a second y
+    /// axis on the right (a twin axis).
+    ///
+    /// ```nabi
+    /// let ax = plot::axes().line([0, 1], [0, 1]).ylabel("left").right().line([0, 1], [100, 50]).ylabel("right");
+    /// assert((try ax.svg()).contains(">right<"));
+    /// ```
+    pub fn right(self) -> Axes {
+        let a = self;
+        a.side = Side::Right;
+        a
+    }
+
+    /// Later layers go to the left y axis again.
+    ///
+    /// ```nabi
+    /// let ax = plot::line([0, 1], [0, 1]).right().line([0, 1], [9, 5]).left().ylabel("left side");
+    /// assert((try ax.svg()).contains(">left side<"));
+    /// ```
+    pub fn left(self) -> Axes {
+        let a = self;
+        a.side = Side::Left;
+        a
+    }
+
+    /// A legend at `loc` (`Loc::Best` by default). Layers with a label
+    /// get one automatically; this places it, or turns it on for none.
+    ///
+    /// ```nabi
+    /// use plot::Loc;
+    ///
+    /// assert((try plot::line([0, 1], [0, 1]).label("a").legend(Loc::LowerRight).svg()).contains(">a<"));
+    /// ```
+    pub fn legend(self, loc: Loc = Loc::Best) -> Axes {
+        let a = self;
+        a.legend = loc;
+        a.legend_on = true;
+        a
+    }
+
+    /// No legend.
+    ///
+    /// ```nabi
+    /// assert(!(try plot::line([0, 1], [0, 1]).label("a").no_legend().svg()).contains(">a<"));
+    /// ```
+    pub fn no_legend(self) -> Axes {
+        let a = self;
+        a.legend_on = false;
+        a
+    }
+
+    /// A colorbar for the last coloured layer, titled `label`.
+    ///
+    /// ```nabi
+    /// assert((try plot::heatmap([[1.0, 2.0]]).colorbar("level").svg()).contains(">level<"));
+    /// ```
+    pub fn colorbar(self, label: str = "") -> Axes {
+        let a = self;
+        a.colorbar = true;
+        a.colorbar_label = label;
+        a
+    }
+
+    /// The theme when this Axes is rendered on its own.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).theme(plot::Theme::dark()).svg()).contains("#141114"));
+    /// ```
+    pub fn theme(self, t: Theme) -> Axes {
+        let a = self;
+        a.theme = t;
+        a
+    }
+
+    /// The figure size in px when rendered on its own.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).size_px(300.0, 200.0).svg()).contains("width=\"300\""));
+    /// ```
+    pub fn size_px(self, w: f64, h: f64) -> Axes {
+        let a = self;
+        a.size = (w, h);
+        a
+    }
+
+    /// This Axes as a one-panel figure.
+    ///
+    /// ```nabi
+    /// assert(plot::line([0, 1], [0, 1]).figure().panels().len() == 1);
+    /// ```
+    pub fn figure(self) -> Figure { Figure::of(self) }
+
+    /// The SVG document.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).svg()).ends_with("</svg>\n"));
+    /// ```
+    pub fn svg(self) throws (PlotError) -> str { try self.figure().svg() }
+
+    /// A PNG image; `scale` multiplies the pixel size (2 for HiDPI).
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).size_px(40.0, 30.0).png())[1] == 80);
+    /// ```
+    pub fn png(self, scale: f64 = 1.0) throws (PlotError) -> List<u8> { try self.figure().png(scale: scale) }
+
+    /// A text rendering for a terminal, `cols` x `rows` characters.
+    ///
+    /// ```nabi
+    /// assert((try plot::line([0, 1], [0, 1]).term(cols: 30, rows: 8)).lines().count() == 8);
+    /// ```
+    pub fn term(self, cols: usize = 80, rows: usize = 24, color: bool = false) throws (PlotError) -> str {
+        try self.figure().term(cols: cols, rows: rows, color: color)
+    }
+
+    /// Writes an `.svg` or `.png` file, by the extension.
+    ///
+    /// ```nabi
+    /// use std::{env, fs, process};
+    ///
+    /// let path = env::temp_dir() / f"plot_{process::id()}.svg";
+    /// try plot::line([0, 1], [0, 1]).save(f"{path}");
+    /// assert((try fs::read_to_str(path)).starts_with("<svg"));
+    /// try fs::remove_file(path);
+    /// ```
+    pub fn save(self, path: str) throws (PlotError) { try self.figure().save(path) }
+
+    /// Prints the terminal rendering.
+    ///
+    /// ```nabi
+    /// try plot::line([0, 1], [0, 1]).show();
+    /// ```
+    pub fn show(self) throws (PlotError) { try self.figure().show() }
+}
+
+fn cat_axis(a: Axis, labels: List<str>) -> Axis {
+    let ax = a;
+    ax.categories = a.categories.clone();
+    for l in labels {
+        if !ax.categories.contains(l) { ax.categories.push(l); }
+    }
+    ax.margin = 0.0;
+    ax
+}
+
+fn slot(cats: List<str>, s: str) -> f64 {
+    for i in 0..cats.len() {
+        if cats[i] == s { return i as f64; }
+    }
+    0.0
+}
+
+fn names_for(n: usize, labels: List<str>) -> List<str> {
+    if labels.is_empty() { List::from_fn(n, |i| f"{i + 1}") } else { labels.clone() }
+}
+
+fn grid_ok(what: str, rows: usize, cols: usize) -> PlotError | none {
+    if cols == usize::MAX { return PlotError::Argument { what: f"{what}: rows of different lengths; every row needs the same number of values" }; }
+    if rows == 0 || cols == 0 { return PlotError::Empty { what: f"{what} grid" }; }
+    none
+}
+
+fn even(e: List<f64>) -> bool {
+    if e.len() < 3 { return true; }
+    let w = e[1] - e[0];
+    for i in 1..e.len() - 1 {
+        if ((e[i + 1] - e[i]) - w).abs() > 1e-9 * w.abs().max(1e-300) { return false; }
+    }
+    true
+}
+
+/// In a notebook: its figure's renderings (`Figure`'s `RichDisplay`).
+///
+/// ```nabi
+/// assert(plot::line([0, 1], [0, 1]).mime_bundle()["image/svg+xml"].starts_with("<svg"));
+/// ```
+impl RichDisplay for Axes {
+    fn mime_bundle(self) -> Dict<str, str> { self.figure().mime_bundle() }
+}
+
+impl ops::Add<Axes> for Axes {
+    type Output = Axes;
+
+    /// Overlays: the layers of `o` drawn after those of `self`; `self`
+    /// keeps its labels, limits and scales where it has them.
+    fn add(self, o: Axes) -> Axes {
+        let a = self.own();
+        for l in o.layers { a.layers.push(l); }
+        for e in o.errors { a.errors.push(e); }
+        if a.title.is_empty() { a.title = o.title; }
+        if a.x.label.is_empty() { a.x.label = o.x.label; }
+        if a.y.label.is_empty() { a.y.label = o.y.label; }
+        if a.y2.label.is_empty() { a.y2.label = o.y2.label; }
+        if a.x.scale == Scale::Linear { a.x.scale = o.x.scale; }
+        if a.y.scale == Scale::Linear { a.y.scale = o.y.scale; }
+        for c in o.x.categories {
+            if !a.x.categories.contains(c) { a.x.categories.push(c); }
+        }
+        if !o.x.categories.is_empty() { a.x.margin = 0.0; }
+        if o.colorbar && !a.colorbar {
+            a.colorbar = true;
+            a.colorbar_label = o.colorbar_label;
+        }
+        a
+    }
+}

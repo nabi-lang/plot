@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="220" viewBox="0 0 520 220" font-family="Geist, 'Geist Fallback', system-ui, sans-serif">
+<defs>
+<clipPath id="c1"><rect x="32.1" y="37.38" width="208.49" height="151.88"/></clipPath>
+<clipPath id="c2"><rect x="294.24" y="37.38" width="207.62" height="151.88"/></clipPath>
+</defs>
+<rect width="100%" height="100%" fill="#fcfbfb"/>
+<path d="M39.68 37.38L39.68 189.25M134.45 37.38L134.45 189.25M229.22 37.38L229.22 189.25" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M32.1 189.25L240.6 189.25M32.1 133.62L240.6 133.62M32.1 77.99L240.6 77.99" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<g clip-path="url(#c1)">
+<path d="M41.58 44.61L65.27 44.61L65.27 189.25L41.58 189.25ZM65.27 55.73L88.96 55.73L88.96 189.25L65.27 189.25ZM88.96 50.17L112.66 50.17L112.66 189.25L88.96 189.25ZM112.66 55.73L136.35 55.73L136.35 189.25L112.66 189.25ZM136.35 44.61L160.04 44.61L160.04 189.25L136.35 189.25ZM160.04 61.3L183.73 61.3L183.73 189.25L160.04 189.25ZM183.73 44.61L207.43 44.61L207.43 189.25L183.73 189.25ZM207.43 44.61L231.12 44.61L231.12 189.25L207.43 189.25Z" fill="#0072b2" fill-opacity="0.85"/>
+</g>
+<path d="M32.1 37.38L32.1 189.25L240.6 189.25" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M39.68 189.25L39.68 193.25M134.45 189.25L134.45 193.25M229.22 189.25L229.22 193.25M32.1 189.25L28.1 189.25M32.1 133.62L28.1 133.62M32.1 77.99L28.1 77.99" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="39.68" y="204.06" font-size="11" fill="#564e53" text-anchor="middle">0</text>
+<text x="134.45" y="204.06" font-size="11" fill="#564e53" text-anchor="middle">50</text>
+<text x="229.22" y="204.06" font-size="11" fill="#564e53" text-anchor="middle">100</text>
+<text x="24.1" y="193.16" font-size="11" fill="#564e53" text-anchor="end">0</text>
+<text x="24.1" y="137.52" font-size="11" fill="#564e53" text-anchor="end">10</text>
+<text x="24.1" y="81.89" font-size="11" fill="#564e53" text-anchor="end">20</text>
+<text x="136.35" y="27.22" font-size="14" fill="#1f1b1e" text-anchor="middle">hist</text>
+<path d="M303.67 37.38L303.67 189.25M429.51 37.38L429.51 189.25" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M294.24 153.2L501.86 153.2M294.24 41.73L501.86 41.73" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<g clip-path="url(#c2)">
+<path d="M303.67 182.35L366.59 126.61L429.51 80.69L492.42 44.28" fill="none" stroke="#0072b2" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<path d="M294.24 37.38L294.24 189.25L501.86 189.25" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M303.67 189.25L303.67 193.25M429.51 189.25L429.51 193.25M294.24 153.2L290.24 153.2M294.24 41.73L290.24 41.73" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="303.67" y="204.06" font-size="11" fill="#564e53" text-anchor="middle"><tspan>10</tspan><tspan font-size="7.7" dy="-4.18">0</tspan></text>
+<text x="429.51" y="204.06" font-size="11" fill="#564e53" text-anchor="middle"><tspan>10</tspan><tspan font-size="7.7" dy="-4.18">2</tspan></text>
+<text x="286.24" y="157.11" font-size="11" fill="#564e53" text-anchor="end"><tspan>10</tspan><tspan font-size="7.7" dy="-4.18">1</tspan></text>
+<text x="286.24" y="45.63" font-size="11" fill="#564e53" text-anchor="end"><tspan>10</tspan><tspan font-size="7.7" dy="-4.18">3</tspan></text>
+<text x="398.05" y="27.22" font-size="14" fill="#1f1b1e" text-anchor="middle">log</text>
+</svg>

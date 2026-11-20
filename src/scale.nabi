@@ -1,0 +1,75 @@
+//! Axis scales: the map from data values to a linear screen coordinate.
+
+/// How an axis maps values to positions.
+///
+/// ```nabi
+/// use plot::Scale;
+///
+/// assert(Scale::Log(10.0).forward(1000.0) == 3.0);
+/// assert(Scale::Symlog { base: 10.0, linthresh: 1.0 }.forward(-10.0) == -2.0);
+/// ```
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Scale {
+    /// Evenly spaced values.
+    Linear,
+    /// Logarithmic in this base; values must be positive.
+    Log(f64),
+    /// Linear within `[-linthresh, linthresh]`, logarithmic outside, so
+    /// zero and both signs fit (matplotlib's `symlog`).
+    Symlog { base: f64; linthresh: f64; },
+    /// Linear in seconds since 1970-01-01 UTC, with calendar ticks.
+    Date,
+}
+
+impl Scale {
+    /// The screen-linear coordinate of `v`.
+    ///
+    /// ```nabi
+    /// assert(plot::Scale::Log(2.0).forward(8.0) == 3.0);
+    /// ```
+    pub fn forward(self, v: f64) -> f64 {
+        match self {
+            Log(b) => {
+                if !(v > 0.0) { return f64::NAN; }
+                if b == 10.0 { v.log10() } else if b == 2.0 { v.log2() } else { v.ln() / b.ln() }
+            }
+            Symlog { base, linthresh } => {
+                let a = v.abs();
+                if a <= linthresh { v / linthresh } else { v.signum() * (1.0 + (a / linthresh).ln() / base.ln()) }
+            }
+            _ => v,
+        }
+    }
+
+    /// The value at screen-linear coordinate `u`.
+    ///
+    /// ```nabi
+    /// use plot::Scale;
+    ///
+    /// let s = Scale::Symlog { base: 10.0, linthresh: 2.0 };
+    /// assert((s.inverse(s.forward(-300.0)) + 300.0).abs() < 1e-9);
+    /// ```
+    pub fn inverse(self, u: f64) -> f64 {
+        match self {
+            Log(b) => b ** u,
+            Symlog { base, linthresh } => {
+                let a = u.abs();
+                if a <= 1.0 { u * linthresh } else { u.signum() * linthresh * base ** (a - 1.0) }
+            }
+            _ => u,
+        }
+    }
+
+    /// Whether `v` can be shown on this scale.
+    ///
+    /// ```nabi
+    /// assert(!plot::Scale::Log(10.0).accepts(-1.0) && plot::Scale::Linear.accepts(-1.0));
+    /// ```
+    pub fn accepts(self, v: f64) -> bool {
+        if !v.is_finite() { return false; }
+        match self {
+            Log(_) => v > 0.0,
+            _ => true,
+        }
+    }
+}

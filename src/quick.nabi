@@ -1,0 +1,194 @@
+//! One-call plots: each function starts an Axes with one layer, so it
+//! chains (`plot::line(x, y).label("a").scatter(x, z)`), adds (`a + b`
+//! overlays), lays out (`a | b`, `a / b`) and pipes (`y |> plot::hist()
+//! |> plot::svg()`). `plot!` is the shortest form.
+
+pub use core::num::linspace;
+
+use pkg::axes::axes;
+use pkg::stat::Bins;
+use pkg::{Axes, Data, Figure, Grid, PlotError, StepAt};
+
+/// A figure or an Axes: what `svg`, `png`, `save` and `show` take.
+///
+/// ```nabi
+/// let a = plot::line([0, 1], [0, 1]);
+/// assert((try plot::svg(a)) == (try plot::svg(a.figure())));
+/// ```
+pub trait Plottable {
+    /// The figure to render.
+    fn to_figure(self) -> Figure;
+}
+
+impl Plottable for Axes {
+    fn to_figure(self) -> Figure { self.figure() }
+}
+
+impl Plottable for Figure {
+    fn to_figure(self) -> Figure { self }
+}
+
+/// A line plot.
+///
+/// ```nabi
+/// assert((try plot::line([0, 1], [1, 0]).svg()).contains("<path"));
+/// ```
+pub fn line<X: Data, Y: Data>(x: X, y: Y) -> Axes { axes().line(x, y) }
+
+/// A scatter plot.
+///
+/// ```nabi
+/// assert((try plot::scatter([1, 2], [2, 1]).svg()).contains("<circle"));
+/// ```
+pub fn scatter<X: Data, Y: Data>(x: X, y: Y) -> Axes { axes().scatter(x, y) }
+
+/// A step plot.
+///
+/// ```nabi
+/// assert((try plot::step([0, 1, 2], [0, 1, 0]).svg()).contains("<path"));
+/// ```
+pub fn step<X: Data, Y: Data>(x: X, y: Y, at: StepAt = StepAt::Post) -> Axes { axes().step(x, y, at) }
+
+/// A bar chart over categories.
+///
+/// ```nabi
+/// assert((try plot::bar(["x", "y"], [1, 2]).svg()).contains(">y<"));
+/// ```
+pub fn bar<H: Data>(labels: List<str>, heights: H) -> Axes { axes().bar(labels, heights) }
+
+/// A histogram.
+///
+/// ```nabi
+/// let svg = try [1.0, 2.0, 2.0, 3.0, 3.0, 3.0] |> plot::hist() |> plot::svg();
+/// assert(svg.contains("<path"));
+/// ```
+pub fn hist<D: Data>(data: D, bins: Bins = Bins::Auto, density: bool = false) -> Axes { axes().hist(data, bins, density: density) }
+
+/// An area under a curve.
+///
+/// ```nabi
+/// assert((try plot::area([0, 1], [1, 2]).svg()).contains("fill-opacity"));
+/// ```
+pub fn area<X: Data, Y: Data>(x: X, y: Y) -> Axes { axes().area(x, y) }
+
+/// The region between two curves.
+///
+/// ```nabi
+/// assert((try plot::fill_between([0, 1], [0, 0], [1, 2]).svg()).contains("fill-opacity"));
+/// ```
+pub fn fill_between<X: Data, A: Data, B: Data>(x: X, y1: A, y2: B) -> Axes { axes().fill_between(x, y1, y2) }
+
+/// Points with symmetric error bars.
+///
+/// ```nabi
+/// assert((try plot::errorbar([0, 1], [1, 2], [0.1, 0.2]).svg()).contains("<circle"));
+/// ```
+pub fn errorbar<X: Data, Y: Data, E: Data>(x: X, y: Y, yerr: E) -> Axes { axes().errorbar(x, y, yerr) }
+
+/// Box plots of groups.
+///
+/// ```nabi
+/// assert((try plot::boxplot([[1.0, 2.0, 3.0]], ["a"]).svg()).contains(">a<"));
+/// ```
+pub fn boxplot(groups: List<List<f64>>, labels: List<str> = []) -> Axes { axes().boxplot(groups, labels: labels) }
+
+/// Violin plots of groups.
+///
+/// ```nabi
+/// assert((try plot::violin([[1.0, 2.0, 3.0, 2.5]]).svg()).contains("<path"));
+/// ```
+pub fn violin(groups: List<List<f64>>, labels: List<str> = []) -> Axes { axes().violin(groups, labels: labels) }
+
+/// A heatmap of a grid, row 0 at the bottom.
+///
+/// ```nabi
+/// assert((try plot::heatmap([[1.0, 2.0], [3.0, 4.0]]).svg()).contains("<image"));
+/// ```
+pub fn heatmap<G: Grid>(z: G) -> Axes { axes().heatmap(z) }
+
+/// An image of a grid, row 0 at the top, square pixels.
+///
+/// ```nabi
+/// assert((try plot::imshow([[1.0, 2.0], [3.0, 4.0]]).svg()).contains("<image"));
+/// ```
+pub fn imshow<G: Grid>(z: G) -> Axes { axes().imshow(z) }
+
+/// Contour lines of a grid.
+///
+/// ```nabi
+/// assert((try plot::contour([[0.0, 1.0], [1.0, 2.0]], [1.0]).svg()).contains("<path"));
+/// ```
+pub fn contour<G: Grid>(z: G, levels: List<f64> = []) -> Axes {
+    axes().contour(z, levels: levels)
+}
+
+/// Filled contours of a grid.
+///
+/// ```nabi
+/// assert((try plot::contourf([[0.0, 1.0], [1.0, 2.0]]).svg()).contains("<path"));
+/// ```
+pub fn contourf<G: Grid>(z: G, levels: List<f64> = []) -> Axes {
+    axes().contourf(z, levels: levels)
+}
+
+/// A vector field.
+///
+/// ```nabi
+/// assert((try plot::quiver([0, 1], [0, 1], [1, 1], [0, 1]).svg()).contains("<path"));
+/// ```
+pub fn quiver<X: Data, Y: Data, U: Data, V: Data>(x: X, y: Y, u: U, v: V) -> Axes { axes().quiver(x, y, u, v) }
+
+/// The SVG of a figure or an Axes.
+///
+/// ```nabi
+/// assert((try plot::svg(plot::line([0, 1], [0, 1]))).starts_with("<svg"));
+/// ```
+pub fn svg<P: Plottable>(p: P) throws (PlotError) -> str { try p.to_figure().svg() }
+
+/// The PNG of a figure or an Axes.
+///
+/// ```nabi
+/// assert((try plot::png(plot::line([0, 1], [0, 1])))[0] == 137);
+/// ```
+pub fn png<P: Plottable>(p: P, scale: f64 = 1.0) throws (PlotError) -> List<u8> { try p.to_figure().png(scale: scale) }
+
+/// Writes a figure or an Axes to an `.svg` or `.png` file.
+///
+/// ```nabi
+/// use std::{env, fs, process};
+///
+/// let path = env::temp_dir() / f"plot_quick_{process::id()}.svg";
+/// try plot::save(plot::line([0, 1], [0, 1]), f"{path}");
+/// try fs::remove_file(path);
+/// ```
+pub fn save<P: Plottable>(p: P, path: str) throws (PlotError) { try p.to_figure().save(path) }
+
+/// Prints a figure or an Axes to the terminal.
+///
+/// ```nabi
+/// try plot::show(plot::bar(["a", "b"], [1, 2]));
+/// ```
+pub fn show<P: Plottable>(p: P) throws (PlotError) { try p.to_figure().show() }
+
+/// The quickest plot: `plot!(y)` draws `y` against its index,
+/// `plot!(x, y1, y2, ...)` one line per series against `x`. The result
+/// is an Axes, so it chains.
+///
+/// ```nabi
+/// let x = plot::linspace(0.0, 1.0, 20);
+/// let y = x.iter().map(|v| v * v).collect::<List<f64>>();
+/// let ax = plot::plot!(x, y, x);
+/// assert(ax.len() == 2);
+/// assert((try plot::plot!([3.0, 1.0, 2.0]).svg()).contains("<path"));
+/// ```
+#[impl_macro(plot)] pub @macro {
+    ( @x: expr , @rep[sep = ","] { @y: expr } ) => {
+        {
+            let xs = @x;
+            let ax = axes();
+            @for @y { ax = ax.line(xs, @y); }
+            ax
+        }
+    }
+    ( @y: expr ) => { axes().line_y(@y) }
+}

@@ -1,0 +1,140 @@
+//! Input data. `Data` is what every plotting call takes for a series of
+//! numbers: a `List` or an `Array` of any rank (read in row-major order),
+//! of f64, f32, i64, i32 or usize, a fixed array, or an integer range:
+//! the forms `linalg::AsVector<f64>` takes in the other packages.
+//! `Grid` is the 2-d form for heatmaps and contours. Both copy once into
+//! a `List<f64>`, so changing the input afterwards does not change the
+//! plot.
+
+use core::array::Array;
+use core::range::Range;
+
+/// A series of numbers to plot.
+///
+/// ```nabi
+/// use plot::Data;
+/// use core::array::Matrix;
+///
+/// let m: Matrix<f64> = [[1, 2], [3, 4]];
+/// assert(m.values() == [1.0, 2.0, 3.0, 4.0]);
+/// assert([1, 2].values() == [1.0, 2.0]);
+/// assert((0..3).values() == [0.0, 1.0, 2.0]);
+/// ```
+pub trait Data {
+    /// The values as a new list of f64.
+    fn values(self) -> List<f64>;
+}
+
+impl Data for List<f64> {
+    fn values(self) -> List<f64> { self.clone() }
+}
+
+impl Data for List<f32> {
+    fn values(self) -> List<f64> { List::from_fn(self.len(), |i| self[i] as f64) }
+}
+
+impl Data for List<i64> {
+    fn values(self) -> List<f64> { List::from_fn(self.len(), |i| self[i] as f64) }
+}
+
+impl Data for List<i32> {
+    fn values(self) -> List<f64> { List::from_fn(self.len(), |i| self[i] as f64) }
+}
+
+impl Data for List<usize> {
+    fn values(self) -> List<f64> { List::from_fn(self.len(), |i| self[i] as f64) }
+}
+
+impl<const N: usize> Data for Array<f64, N> {
+    fn values(self) -> List<f64> {
+        match self.as_list() {
+            xs: List<f64> => xs.clone(),
+            none => self.to_list(),
+        }
+    }
+}
+
+impl<const N: usize> Data for Array<f32, N> {
+    fn values(self) -> List<f64> { (self.as_list() ?? self.to_list()).values() }
+}
+
+impl<const N: usize> Data for Array<i64, N> {
+    fn values(self) -> List<f64> { (self.as_list() ?? self.to_list()).values() }
+}
+
+impl<const N: usize> Data for [f64; N] {
+    fn values(self) -> List<f64> { List::from_fn(N, |i| self[i]) }
+}
+
+impl<const N: usize> Data for Array<i32, N> {
+    fn values(self) -> List<f64> { (self.as_list() ?? self.to_list()).values() }
+}
+
+impl<const N: usize> Data for Array<usize, N> {
+    fn values(self) -> List<f64> { (self.as_list() ?? self.to_list()).values() }
+}
+
+impl<const N: usize> Data for [f32; N] {
+    fn values(self) -> List<f64> { List::from_fn(N, |i| self[i] as f64) }
+}
+
+impl<const N: usize> Data for [i64; N] {
+    fn values(self) -> List<f64> { List::from_fn(N, |i| self[i] as f64) }
+}
+
+impl Data for Range<i64> {
+    fn values(self) -> List<f64> {
+        let n = if self.end > self.start { (self.end - self.start) as usize } else { 0 };
+        List::from_fn(n, |i| (self.start + i as i64) as f64)
+    }
+}
+
+/// A 2-d grid of values for `heatmap` and `contour`: row `i` is the
+/// `i`-th y position, from the bottom of the plot unless the layer says
+/// otherwise.
+///
+/// ```nabi
+/// use plot::Grid;
+///
+/// let (z, rows, cols) = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]].grid();
+/// assert(rows == 2 && cols == 3 && z[5] == 6.0);
+/// ```
+pub trait Grid {
+    /// The values in row-major order with the row and column counts.
+    /// Ragged rows give `cols == usize::MAX`, which rendering reports.
+    fn grid(self) -> (List<f64>, usize, usize);
+}
+
+impl Grid for Array<f64, 2> {
+    fn grid(self) -> (List<f64>, usize, usize) {
+        let s = self.shape();
+        (self.values(), s[0], s[1])
+    }
+}
+
+impl Grid for Array<f32, 2> {
+    fn grid(self) -> (List<f64>, usize, usize) {
+        let s = self.shape();
+        (self.values(), s[0], s[1])
+    }
+}
+
+impl Grid for Array<i64, 2> {
+    fn grid(self) -> (List<f64>, usize, usize) {
+        let s = self.shape();
+        (self.values(), s[0], s[1])
+    }
+}
+
+impl Grid for List<List<f64>> {
+    fn grid(self) -> (List<f64>, usize, usize) {
+        let rows = self.len();
+        let cols = if rows == 0 { 0 } else { self[0].len() };
+        let out: List<f64> = List::with_capacity(rows * cols);
+        for r in self {
+            if r.len() != cols { return (out, rows, usize::MAX); }
+            for v in r { out.push(v); }
+        }
+        (out, rows, cols)
+    }
+}

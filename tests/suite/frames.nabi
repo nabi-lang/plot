@@ -1,0 +1,22 @@
+// The table adapter (feature `table`): columns by name, groups, dates.
+
+use pkg::ops::MapsTo;
+use table::{Column, Date, Table};
+
+#[test]
+fn columns_by_name() {
+    let t = try! Table::from_columns([
+        ("day", Column::dates([Date::from_days(19723), Date::from_days(19724), Date::from_days(19725)])),
+        ("temp", Column::f64s([3.5, 4.0, 2.5])),
+        ("site", Column::strs(["a", "b", "a"])),
+    ]);
+    let ax = try! (t |> pkg::frame::line("day" ↦ "temp"));
+    let svg = try! ax.svg();
+    assert(svg.contains(">temp<") && svg.contains("2024-01-0"));
+    let g = try! pkg::frame::scatter(t, "day" ↦ "temp", by: "site");
+    assert(g.len() == 2 && (try! g.svg()).contains(">b<"));
+    let e = try { _ = try pkg::frame::line(t, "day" ↦ "nope"); "" } catch e { f"{e}" };
+    assert(e.contains("no column \"nope\""));
+    let e = try { _ = try pkg::frame::hist(t, "site"); "" } catch e { f"{e}" };
+    assert(e.contains("not numbers"));
+}

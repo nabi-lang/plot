@@ -1,0 +1,150 @@
+// Formatters, calendar arithmetic, scales, text markup and statistics.
+
+use pkg::calendar::{civil_from_days, days_from_civil};
+use pkg::format::{fixed, label, labels};
+use pkg::stat::{Bins, box_stats, counts, edges, kde, quantile};
+use pkg::tests::suite::{close, normal};
+use pkg::text::{parse, plain, symbol};
+use pkg::{Data, Format, Scale};
+use core::array::{Array, Vector};
+
+#[test]
+fn fixed_rounds() {
+    assert(fixed(0.125, 2) == "0.13");
+    assert(fixed(-1.5, 0) == "-2");
+    assert(fixed(1234.5678, 1) == "1234.6");
+    assert(fixed(0.05, 3) == "0.050");
+    assert(fixed(-0.0001, 2) == "0.00");
+    assert(fixed(f64::NAN, 2) == "NaN");
+}
+
+#[test]
+fn auto_labels() {
+    let (l, off) = labels([0.0, 0.25, 0.5, 0.75, 1.0], Scale::Linear, Format::Auto);
+    assert(l == ["0.00", "0.25", "0.50", "0.75", "1.00"] && off == "");
+    let (l, _) = labels([-2.0, 0.0, 2.0], Scale::Linear, Format::Auto);
+    assert(l[0] == "\u{2212}2");
+    let (l, off) = labels([0.0, 5e-5, 1e-4], Scale::Linear, Format::Auto);
+    assert(l == ["0.0", "0.5", "1.0"] && off == "$\\times10^{\u{2212}4}$");
+    let (l, _) = labels([0.01, 1.0, 100.0], Scale::Log(10.0), Format::Auto);
+    assert(l == ["$10^{\u{2212}2}$", "$10^{0}$", "$10^{2}$"]);
+    let (l, _) = labels([-10.0, 0.0, 10.0], Scale::Symlog { base: 10.0, linthresh: 1.0 }, Format::Auto);
+    assert(l[1] == "0" && l[0].contains("\u{2212}"));
+}
+
+#[test]
+fn named_formats() {
+    assert(label(1500.0, Format::Si) == "1.5k");
+    assert(label(2.5e-6, Format::Si) == "2.5\u{b5}");
+    assert(label(0.0, Format::Si) == "0");
+    assert(label(3e9, Format::Si) == "3G");
+    assert(label(0.075, Format::Percent) == "7.5%");
+    assert(label(12345.0, Format::Sci).contains("\\times10^{4}"));
+    let (l, _) = labels([1000.0, 2000.0, 3000.0], Scale::Linear, Format::Si);
+    assert(l == ["1k", "2k", "3k"]);
+    let (l, _) = labels([0.0, 1.0], Scale::Linear, Format::Custom(|v| f"<{v}>"));
+    assert(l == ["<0>", "<1>"]);
+}
+
+#[test]
+fn date_labels() {
+    let t = [pkg::date(2024, 1, 1), pkg::date(2024, 4, 1)];
+    let (l, _) = labels(t, Scale::Date, Format::Auto);
+    assert(l == ["2024-01", "2024-04"]);
+    let t = [pkg::datetime(2024, 1, 1, 9, 30, 0.0), pkg::datetime(2024, 1, 1, 10, 0, 0.0)];
+    let (l, _) = labels(t, Scale::Date, Format::Auto);
+    assert(l == ["09:30", "10:00"]);
+}
+
+#[test]
+fn calendar_round_trip() {
+    assert(days_from_civil(1970, 1, 1) == 0);
+    assert(days_from_civil(2000, 2, 29) == 11016);
+    assert(days_from_civil(1969, 12, 31) == -1);
+    let d = -800000;
+    while d <= 800000 {
+        let (y, m, dd) = civil_from_days(d);
+        assert(days_from_civil(y, m, dd) == d);
+        d += 997;
+    }
+}
+
+#[test]
+fn scales_invert() {
+    let xs = [1e-3, 0.5, 1.0, 7.0, 1e6];
+    for s in [Scale::Linear, Scale::Log(10.0), Scale::Log(2.0), Scale::Symlog { base: 10.0, linthresh: 0.1 }, Scale::Date] {
+        for x in xs { close(s.inverse(s.forward(x)), x, 1e-9 * x, f"{s:?}"); }
+    }
+    assert(!Scale::Log(10.0).accepts(0.0) && Scale::Symlog { base: 10.0, linthresh: 1.0 }.accepts(-5.0));
+    assert(Scale::Log(10.0).forward(-1.0).is_nan());
+}
+
+#[test]
+fn math_markup() {
+    let r = parse("$\\Delta x_{i}^{2}$ in \\$");
+    assert(r[0].text == "\u{394}x");
+    assert(r[1].text == "i" && r[1].rise < 0.0 && r[1].scale < 1.0);
+    assert(r[2].text == "2" && r[2].rise > 0.0);
+    assert(r[3].text == " in $");
+    // Nested scripts shrink again; an unmatched `$` is literal.
+    let n = parse("$e^{x^2}$");
+    assert(n[2].scale < n[1].scale);
+    assert(parse("5$")[0].text == "5$");
+    assert(symbol("nosuch") is none);
+    assert(plain(parse("$\\mathrm{kg}\\,m^{-2}$")) == "kg\u{2009}m\u{207b}\u{b2}");
+    assert(plain(parse("$x^{ab}$")) == "x^ab");
+}
+
+#[test]
+fn bins_match_numpy() {
+    let x = [2.1, 3.7, 1.2, 5.5, 4.4, 4.9, 3.3, 2.8, 6.1, 0.4, 3.9, 4.2, 2.2, 7.5, 3.1];
+    for b in [Bins::Auto, Bins::Fd, Bins::Sturges] {
+        let e = edges(x, b);
+        assert(e.len() == 6);
+        close(e[1], 1.82, 1e-12, "edge 1");
+        assert(counts(x, e) == [2.0, 4.0, 5.0, 2.0, 2.0]);
+    }
+    let e = edges(x, Bins::Sqrt);
+    assert(e.len() == 5 && counts(x, e) == [3.0, 6.0, 4.0, 2.0]);
+    close(e[1], 2.175, 1e-12, "sqrt edge");
+    assert(edges([], Bins::Auto) == [0.0, 1.0]);
+    assert(edges([2.0, 2.0], Bins::Auto) == [1.5, 2.5]);
+    // Values outside the edges are dropped, the last bin is closed.
+    assert(counts([0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0]) == [1.0, 2.0]);
+}
+
+#[test]
+fn quantiles_and_boxes() {
+    let x = [2.1, 3.7, 1.2, 5.5, 4.4, 4.9, 3.3, 2.8, 6.1, 0.4, 3.9, 4.2, 2.2, 7.5, 3.1];
+    let s = box_stats(x);
+    close(s.q1, 2.5, 1e-12, "q1");
+    close(s.median, 3.7, 1e-12, "median");
+    close(s.q3, 4.65, 1e-12, "q3");
+    assert(s.fliers.is_empty() && s.lo == 0.4 && s.hi == 7.5);
+    let t = box_stats([1.0, 2.0, 2.0, 3.0, f64::NAN, 50.0]);
+    assert(t.fliers == [50.0] && t.hi == 3.0);
+    assert(quantile([], 0.5).is_nan());
+}
+
+#[test]
+fn kde_integrates_to_one() {
+    let x = normal(500, 3);
+    let (at, d) = kde(x, 400);
+    let area = 0.0;
+    for i in 1..at.len() { area += (at[i] - at[i - 1]) * (d[i] + d[i - 1]) / 2.0; }
+    // The grid covers the data range only, so a little mass lies outside.
+    assert(area > 0.95 && area < 1.0);
+}
+
+fn use_data<D: Data>(d: D, want: List<f64>) { assert(d.values() == want); }
+
+#[test]
+fn data_forms() {
+    let a: Vector<i32> = Array::from_list([1i32, 2i32], [2]);
+    let f: [f32; 2] = [1.0, 2.0];
+    let k: [i64; 2] = [1, 2];
+    use_data(a, [1.0, 2.0]);
+    use_data(f, [1.0, 2.0]);
+    use_data(k, [1.0, 2.0]);
+    use_data(1..3, [1.0, 2.0]);
+}

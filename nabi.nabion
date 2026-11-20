@@ -1,0 +1,17 @@
+Package {
+    name: "plot",
+    version: "0.1.0",
+    nabi_version: "0.1.0",
+    toolchain: "0.1",
+    description: "Scientific plotting to SVG, PNG and the terminal: line, scatter, bar, histogram, box, violin, heatmap, contour and more, with nice ticks, colormaps and themes",
+    license: "MIT OR Apache-2.0",
+    repository: "https://github.com/nabi-lang/plot",
+    keywords: ["plotting", "visualization", "svg", "png", "charts"],
+    categories: ["science", "visualization", "graphics"],
+    deps: {
+        "table": Dep::path("../table", version: "^0.1", optional: true),
+    },
+    features: {
+        "table": ["dep:table"],
+    },
+}

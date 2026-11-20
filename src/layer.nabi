@@ -1,0 +1,214 @@
+//! What an Axes holds: layers, each one mark (a line, markers, bars, an
+//! image, ...) with its style. Builders add layers; layout reads them.
+
+use pkg::{ColorSpec, Colormap, Path};
+
+/// A marker shape. Every shape is a filled outline, so it can take an
+/// edge colour too.
+///
+/// ```nabi
+/// assert((try plot::scatter([0, 1], [0, 1]).marker(plot::Marker::Star).svg()).contains("<path"));
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Marker { Circle, Square, Diamond, Triangle, TriangleDown, Plus, Cross, Star, Nothing }
+
+/// A line's dash pattern.
+///
+/// ```nabi
+/// let ax = plot::line([0, 1], [0, 1]).dash(plot::Dash::Pattern([4.0, 1.0, 1.0, 1.0]));
+/// assert((try ax.svg()).contains("stroke-dasharray"));
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+pub enum Dash {
+    Solid,
+    Dashed,
+    Dotted,
+    DashDot,
+    /// Dash and gap lengths in multiples of the line width.
+    Pattern(List<f64>),
+}
+
+/// Where a step plot changes value: at `x[i]` going right (`Post`, the
+/// value holds until the next point), before it (`Pre`), or halfway
+/// (`Mid`).
+///
+/// ```nabi
+/// assert((try plot::step([0, 1, 2], [1, 2, 1], plot::StepAt::Mid).svg()).contains("<path"));
+/// ```
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum StepAt { Pre, Post, Mid }
+
+/// Where the legend goes.
+///
+/// ```nabi
+/// assert((try plot::line([0, 1], [0, 1]).label("a").legend(plot::Loc::Outside).svg()).contains(">a<"));
+/// ```
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Loc {
+    /// The corner or edge that covers the fewest data points.
+    Best,
+    UpperRight,
+    UpperLeft,
+    LowerLeft,
+    LowerRight,
+    Right,
+    Left,
+    Top,
+    Bottom,
+    /// Outside the plot area, right of it.
+    Outside,
+}
+
+/// Which axis a layer is drawn against.
+///
+/// ```nabi
+/// use plot::layer::Side;
+///
+/// assert(Side::Left != Side::Right);
+/// ```
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Side { Left, Right }
+
+/// A box plot's numbers for one group.
+///
+/// ```nabi
+/// assert(plot::stat::box_stats([1.0, 2.0, 3.0]).median == 2.0);
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+pub struct BoxStats {
+    pub q1: f64;
+    pub median: f64;
+    pub q3: f64;
+    pub lo: f64;
+    pub hi: f64;
+    pub mean: f64;
+    pub fliers: List<f64>;
+}
+
+/// The thing a layer draws.
+///
+/// ```nabi
+/// let ax = plot::line([0, 1], [0, 1]);
+/// assert(ax.len() == 1);
+/// ```
+#[derive(Clone, Debug)]
+pub enum Mark {
+    Line { x: List<f64>; y: List<f64>; step: StepAt | none; },
+    Scatter { x: List<f64>; y: List<f64>; sizes: List<f64>; values: List<f64>; },
+    /// Bars centred at `x` from `base` to `base + h`; `width` in x units.
+    Bars { x: List<f64>; h: List<f64>; base: List<f64>; width: f64; horizontal: bool; },
+    /// The region between two curves over `x`; `outline` draws `y2` as a
+    /// line on top.
+    Fill { x: List<f64>; y1: List<f64>; y2: List<f64>; outline: bool; },
+    ErrorBars { x: List<f64>; y: List<f64>; ylo: List<f64>; yhi: List<f64>; xlo: List<f64>; xhi: List<f64>; },
+    Boxes { pos: List<f64>; stats: List<BoxStats>; width: f64; },
+    /// Densities `dens[i]` sampled at `at[i]` around `pos[i]`.
+    Violins { pos: List<f64>; at: List<List<f64>>; dens: List<List<f64>>; width: f64; medians: List<f64>; },
+    /// A grid of values over the rectangle `extent` (x0, x1, y0, y1), row
+    /// 0 at `y0`.
+    Image { z: List<f64>; rows: usize; cols: usize; extent: (f64, f64, f64, f64); },
+    /// Contour lines (or filled bands) of a grid over `extent`.
+    Contour { z: List<f64>; rows: usize; cols: usize; extent: (f64, f64, f64, f64); levels: List<f64>; filled: bool; },
+    /// Arrows from `(x, y)` along `(u, v)`.
+    Quiver { x: List<f64>; y: List<f64>; u: List<f64>; v: List<f64>; scale: f64; },
+    Text { x: f64; y: f64; text: str; },
+    /// Text at `(tx, ty)` with an arrow to `(x, y)`.
+    Note { x: f64; y: f64; tx: f64; ty: f64; text: str; },
+    /// A horizontal (`vertical` false) or vertical line across the plot.
+    Rule { at: f64; vertical: bool; },
+    /// A band across the plot between `lo` and `hi`.
+    Span { lo: f64; hi: f64; vertical: bool; },
+}
+
+/// The style of a layer. `color` none takes the next cycle colour.
+///
+/// ```nabi
+/// assert(plot::line([0, 1], [0, 1]).width(2.0).len() == 1);
+/// ```
+#[derive(Clone, Debug)]
+pub struct Style {
+    pub color: ColorSpec;
+    pub edge: ColorSpec;
+    pub alpha: f64;
+    pub width: f64;
+    pub dash: Dash;
+    pub marker: Marker;
+    pub size: f64;
+    pub cmap: Colormap | none;
+    pub vmin: f64;
+    pub vmax: f64;
+    pub font_size: f64;
+}
+
+impl Style {
+    pub(pkg) fn new() -> Style {
+        Style {
+            color: none,
+            edge: none,
+            alpha: 1.0,
+            width: f64::NAN,
+            dash: Dash::Solid,
+            marker: Marker::Nothing,
+            size: f64::NAN,
+            cmap: none,
+            vmin: f64::NAN,
+            vmax: f64::NAN,
+            font_size: f64::NAN,
+        }
+    }
+}
+
+/// One layer of an Axes.
+///
+/// ```nabi
+/// assert(plot::bar(["a"], [1]).len() == 1);
+/// ```
+#[derive(Clone, Debug)]
+pub struct Layer {
+    pub mark: Mark;
+    pub style: Style;
+    pub label: str;
+    pub side: Side;
+}
+
+/// The outline of marker `m`, `size` px across, centred at `(cx, cy)`.
+pub(pkg) fn marker_path(m: Marker, cx: f64, cy: f64, size: f64) -> Path {
+    let r = size / 2.0;
+    let p = Path::new();
+    match m {
+        Circle => p.add_circle(cx, cy, r),
+        Square => p.add_rect(cx - r * 0.886, cy - r * 0.886, r * 1.772, r * 1.772),
+        Diamond => polygon(p, cx, cy, [0.0, 1.15, 0.0, -1.15], [-1.15, 0.0, 1.15, 0.0], r),
+        Triangle => polygon(p, cx, cy, [0.0, 1.1, -1.1], [-1.15, 0.75, 0.75], r),
+        TriangleDown => polygon(p, cx, cy, [0.0, -1.1, 1.1], [1.15, -0.75, -0.75], r),
+        Plus => {
+            let t = 0.36;
+            polygon(p, cx, cy, [-t, t, t, 1.0, 1.0, t, t, -t, -t, -1.0, -1.0, -t], [-1.0, -1.0, -t, -t, t, t, 1.0, 1.0, t, t, -t, -t], r * 1.1);
+        }
+        Cross => {
+            let a = 0.25;
+            let xs = [-1.0 + a, 0.0, 1.0 - a, 1.0, a, 1.0, 1.0 - a, 0.0, -1.0 + a, -1.0, -a, -1.0];
+            let ys = [-1.0, -a, -1.0, -1.0 + a, 0.0, 1.0 - a, 1.0, a, 1.0, 1.0 - a, 0.0, -1.0 + a];
+            polygon(p, cx, cy, xs, ys, r * 0.95);
+        }
+        Star => {
+            let xs: List<f64> = [];
+            let ys: List<f64> = [];
+            for k in 0..10 {
+                let a = f64::PI * (k as f64) / 5.0 - f64::PI / 2.0;
+                let rr = if k % 2 == 0 { 1.2 } else { 0.5 };
+                xs.push(rr * a.cos());
+                ys.push(rr * a.sin());
+            }
+            polygon(p, cx, cy, xs, ys, r);
+        }
+        Nothing => {}
+    }
+    p
+}
+
+fn polygon(p: Path, cx: f64, cy: f64, xs: List<f64>, ys: List<f64>, r: f64) {
+    p.move_to(cx + xs[0] * r, cy + ys[0] * r);
+    for i in 1..xs.len() { p.line_to(cx + xs[i] * r, cy + ys[i] * r); }
+    p.close();
+}

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="240" viewBox="0 0 300 240" font-family="Geist, 'Geist Fallback', system-ui, sans-serif">
+<defs>
+<clipPath id="c1"><rect x="40.11" y="15.5" width="183.64" height="193.75"/></clipPath>
+</defs>
+<rect width="100%" height="100%" fill="#fcfbfb"/>
+<path d="M40.11 15.5L40.11 209.25M70.72 15.5L70.72 209.25M101.32 15.5L101.32 209.25M131.93 15.5L131.93 209.25M162.54 15.5L162.54 209.25M193.15 15.5L193.15 209.25M223.75 15.5L223.75 209.25" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M40.11 209.25L223.75 209.25M40.11 176.96L223.75 176.96M40.11 144.67L223.75 144.67M40.11 112.38L223.75 112.38M40.11 80.08L223.75 80.08M40.11 47.79L223.75 47.79M40.11 15.5L223.75 15.5" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<g clip-path="url(#c1)">
+<image x="40.11" y="15.5" width="183.64" height="193.75" preserveAspectRatio="none" style="image-rendering:pixelated;image-rendering:crisp-edges" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAIAAADZSiLoAAAAOUlEQVR4nA3HsQ0AEBAFUMlVeo3CHHoxgrWYwhhWUNpBL5f4icRd+cyIBc2+3wmc3fbhVFp3gpNCAPSlEED2AE74AAAAAElFTkSuQmCC"/>
+<path d="M162.54 176.96L147.24 160.81L131.93 144.67L116.63 128.52L101.32 112.38L86.02 96.23L70.72 80.08" fill="none" stroke="#ffffff" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M193.15 144.67L177.84 128.52L162.54 112.38L147.24 96.23L131.93 80.08L116.63 63.94L101.32 47.79" fill="none" stroke="#ffffff" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<path d="M40.11 15.5L40.11 209.25L223.75 209.25" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M40.11 209.25L40.11 213.25M70.72 209.25L70.72 213.25M101.32 209.25L101.32 213.25M131.93 209.25L131.93 213.25M162.54 209.25L162.54 213.25M193.15 209.25L193.15 213.25M223.75 209.25L223.75 213.25M40.11 209.25L36.11 209.25M40.11 176.96L36.11 176.96M40.11 144.67L36.11 144.67M40.11 112.38L36.11 112.38M40.11 80.08L36.11 80.08M40.11 47.79L36.11 47.79M40.11 15.5L36.11 15.5" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="40.11" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">−0.5</text>
+<text x="70.72" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">0.0</text>
+<text x="101.32" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">0.5</text>
+<text x="131.93" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">1.0</text>
+<text x="162.54" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">1.5</text>
+<text x="193.15" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">2.0</text>
+<text x="223.75" y="224.06" font-size="11" fill="#564e53" text-anchor="middle">2.5</text>
+<text x="32.11" y="213.16" font-size="11" fill="#564e53" text-anchor="end">−0.5</text>
+<text x="32.11" y="180.86" font-size="11" fill="#564e53" text-anchor="end">0.0</text>
+<text x="32.11" y="148.57" font-size="11" fill="#564e53" text-anchor="end">0.5</text>
+<text x="32.11" y="116.28" font-size="11" fill="#564e53" text-anchor="end">1.0</text>
+<text x="32.11" y="83.99" font-size="11" fill="#564e53" text-anchor="end">1.5</text>
+<text x="32.11" y="51.7" font-size="11" fill="#564e53" text-anchor="end">2.0</text>
+<text x="32.11" y="19.41" font-size="11" fill="#564e53" text-anchor="end">2.5</text>
+<image x="235.75" y="15.5" width="12" height="193.75" preserveAspectRatio="none" style="image-rendering:pixelated;image-rendering:crisp-edges" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAEACAIAAAD9XIvPAAAAu0lEQVR4nI1Q2xEDIQhEe0n/ZaUKd6OCBziauQ9nn4KjtO+nQlAb0ZHGB7I2MZxapm4U46WCisoVm1Tn7Lxr55o/Ple/ml/Mt675SL2SMXS9t+bou7yvXPvGZzdkSYdz8Bh8Rm/i+KesueVLU5TL4y2tfPkRRQzn8d7gJXDvbFnfWbaO38tZueVyu3f2rvmLOeeMf7uKdI2Lf9KIs5l3wnd7RpvP8LbYvejdw54NxCVD6nH0kDMi3kXXCX/kZn+nDLDaFQAAAABJRU5ErkJggg=="/>
+<path d="M235.75 15.5L247.75 15.5L247.75 209.25L235.75 209.25Z" fill="none" stroke="#6b6268" stroke-width="0.75" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="254.75" y="213.16" font-size="11" fill="#564e53">0</text>
+<text x="254.75" y="116.28" font-size="11" fill="#564e53">2</text>
+<text x="254.75" y="19.41" font-size="11" fill="#564e53">4</text>
+<path d="M247.75 209.25L251.75 209.25M247.75 112.38L251.75 112.38M247.75 15.5L251.75 15.5" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="274.57" y="112.38" font-size="12" fill="#1f1b1e" text-anchor="middle" transform="rotate(-90 274.57 112.38)">z</text>
+</svg>

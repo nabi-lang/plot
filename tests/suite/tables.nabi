@@ -1,0 +1,70 @@
+// Colormaps against matplotlib (cm(x) at 0, 0.25, 0.5, 0.75, 1, rounded
+// to 8 bits), colours and themes.
+
+use pkg::color::{okabe_ito, tableau10};
+use pkg::tests::suite::{close};
+use pkg::{Color, Colormap, Theme};
+
+fn rgb(m: Colormap, want: List<(u8, u8, u8)>) {
+    let at = [0.0, 0.25, 0.5, 0.75, 1.0];
+    for i in 0..5 {
+        let c = m.at(at[i]);
+        let (r, g, b) = want[i];
+        if c != Color::rgb(r, g, b) { panic(f"{m.name} at {at[i]}: {c} != {Color::rgb(r, g, b)}"); }
+    }
+}
+
+#[test]
+fn colormaps_match_matplotlib() {
+    rgb(Colormap::viridis(), [(68, 1, 84), (59, 82, 139), (33, 145, 140), (94, 201, 98), (253, 231, 37)]);
+    rgb(Colormap::magma(), [(0, 0, 4), (81, 18, 124), (183, 55, 121), (252, 137, 97), (252, 253, 191)]);
+    rgb(Colormap::inferno(), [(0, 0, 4), (87, 16, 110), (188, 55, 84), (249, 142, 9), (252, 255, 164)]);
+    rgb(Colormap::plasma(), [(13, 8, 135), (126, 3, 168), (204, 71, 120), (248, 149, 64), (240, 249, 33)]);
+    rgb(Colormap::cividis(), [(0, 34, 78), (67, 78, 108), (125, 124, 120), (188, 174, 108), (254, 232, 56)]);
+    rgb(Colormap::coolwarm(), [(59, 76, 192), (141, 176, 254), (221, 220, 220), (244, 152, 122), (180, 4, 38)]);
+    rgb(Colormap::gray(), [(0, 0, 0), (64, 64, 64), (128, 128, 128), (192, 192, 192), (255, 255, 255)]);
+}
+
+#[test]
+fn colormap_lookup() {
+    let m = Colormap::viridis();
+    assert(m.lut.len() == 256);
+    // [k/256, (k+1)/256) is entry k; 1.0 is the last.
+    assert(m.at(0.5 / 256.0) == m.lut[0] && m.at(1.0 / 256.0) == m.lut[1] && m.at(1.0) == m.lut[255]);
+    assert(m.at(-0.1) == m.lut[0] && m.at(1.1) == m.lut[255] && m.at(f64::NAN).a == 0);
+    let r = m.reversed();
+    assert(r.name == "viridis_r" && r.at(0.0) == m.at(1.0) && r.reversed().name == "viridis");
+    for name in ["viridis", "magma", "inferno", "plasma", "cividis", "coolwarm", "gray", "gray_r"] {
+        assert(!(Colormap::named(name) is none));
+    }
+    assert(Colormap::named("jet") is none);
+    let c = Colormap::from_colors([Color::rgb(255, 0, 0), Color::rgb(0, 0, 255), Color::rgb(0, 255, 0)]);
+    assert(c.at(0.0) == Color::rgb(255, 0, 0) && c.at(0.5).b >= 250 && c.at(0.5).r == 0 && c.at(1.0) == Color::rgb(0, 255, 0));
+}
+
+#[test]
+fn colours_parse() {
+    assert((try! Color::parse("#0072B2")) == Color::rgb(0, 114, 178));
+    assert((try! Color::parse(" #abc ")) == Color::rgb(170, 187, 204));
+    assert((try! Color::parse("#11223344")).a == 0x44);
+    assert((try! Color::parse("Grey")) == Color::rgb(128, 128, 128));
+    assert((try! Color::parse("transparent")).a == 0);
+    for bad in ["", "#12", "#12345", "#ggg", "blurple", "rgb(1,2,3)"] {
+        assert((try? Color::parse(bad)) is none);
+    }
+    assert(Color::rgba(1, 2, 3, 4).to_hex() == "#01020304");
+    assert(f"{Color::rgb(255, 255, 255)}" == "#ffffff");
+    close(Color::rgb(255, 255, 255).luminance(), 1.0, 1e-12, "white");
+    assert(Color::rgb(0, 0, 0).mix(Color::rgb(255, 0, 0), 1.0) == Color::rgb(255, 0, 0));
+}
+
+#[test]
+fn cycles_and_themes() {
+    assert(okabe_ito().len() == 8 && okabe_ito()[1] == Color::rgb(213, 94, 0));
+    assert(tableau10()[0] == Color::rgb(78, 121, 167));
+    let l = Theme::light();
+    let d = Theme::dark();
+    assert(l.background.to_hex() == "#fcfbfb" && l.ink.to_hex() == "#1f1b1e");
+    assert(d.background.to_hex() == "#141114" && d.ink.to_hex() == "#faf7f8");
+    assert(d.series(7) == d.ink && l.series(8) == l.series(0));
+}

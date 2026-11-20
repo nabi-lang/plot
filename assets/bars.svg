@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="300" viewBox="0 0 720 300" font-family="Geist, 'Geist Fallback', system-ui, sans-serif">
+<defs>
+<clipPath id="c1"><rect x="42.29" y="37.38" width="293.87" height="231.88"/></clipPath>
+<clipPath id="c2"><rect x="389.52" y="37.38" width="306.65" height="231.88"/></clipPath>
+</defs>
+<rect width="100%" height="100%" fill="#fcfbfb"/>
+<path d="M84.27 37.38L84.27 269.25M154.24 37.38L154.24 269.25M224.21 37.38L224.21 269.25M294.18 37.38L294.18 269.25" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M42.29 269.25L336.16 269.25M42.29 184.31L336.16 184.31M42.29 99.38L336.16 99.38" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<g clip-path="url(#c1)">
+<path d="M56.29 137.6L74.95 137.6L74.95 269.25L56.29 269.25ZM126.26 99.38L144.91 99.38L144.91 269.25L126.26 269.25ZM196.22 73.9L214.88 73.9L214.88 269.25L196.22 269.25ZM266.19 48.42L284.85 48.42L284.85 269.25L266.19 269.25Z" fill="#0072b2"/>
+<path d="M74.95 175.82L93.6 175.82L93.6 269.25L74.95 269.25ZM144.91 146.09L163.57 146.09L163.57 269.25L144.91 269.25ZM214.88 137.6L233.54 137.6L233.54 269.25L214.88 269.25ZM284.85 82.39L303.51 82.39L303.51 269.25L284.85 269.25Z" fill="#d55e00"/>
+<path d="M93.6 205.55L112.26 205.55L112.26 269.25L93.6 269.25ZM163.57 197.05L182.23 197.05L182.23 269.25L163.57 269.25ZM233.54 158.83L252.2 158.83L252.2 269.25L233.54 269.25ZM303.51 146.09L322.17 146.09L322.17 269.25L303.51 269.25Z" fill="#009e73"/>
+</g>
+<path d="M42.29 37.38L42.29 269.25L336.16 269.25" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M84.27 269.25L84.27 273.25M154.24 269.25L154.24 273.25M224.21 269.25L224.21 273.25M294.18 269.25L294.18 273.25M42.29 269.25L38.29 269.25M42.29 184.31L38.29 184.31M42.29 99.38L38.29 99.38" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="84.27" y="284.06" font-size="11" fill="#564e53" text-anchor="middle">2021</text>
+<text x="154.24" y="284.06" font-size="11" fill="#564e53" text-anchor="middle">2022</text>
+<text x="224.21" y="284.06" font-size="11" fill="#564e53" text-anchor="middle">2023</text>
+<text x="294.18" y="284.06" font-size="11" fill="#564e53" text-anchor="middle">2024</text>
+<text x="34.29" y="273.15" font-size="11" fill="#564e53" text-anchor="end">0</text>
+<text x="34.29" y="188.22" font-size="11" fill="#564e53" text-anchor="end">2</text>
+<text x="34.29" y="103.28" font-size="11" fill="#564e53" text-anchor="end">4</text>
+<text x="16.52" y="153.31" font-size="12" fill="#1f1b1e" text-anchor="middle" transform="rotate(-90 16.52 153.31)">revenue [M]</text>
+<text x="189.23" y="27.22" font-size="14" fill="#1f1b1e" text-anchor="middle">Grouped</text>
+<path d="M50.29 45.38L119.34 45.38L119.34 96.63L50.29 96.63Z" fill="#fcfbfb" fill-opacity="0.9"/>
+<path d="M50.29 45.38L119.34 45.38L119.34 96.63L50.29 96.63Z" fill="none" stroke="#d6cfd2" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M59.29 52.75L77.29 52.75L77.29 61.75L59.29 61.75Z" fill="#0072b2"/>
+<text x="85.29" y="61.16" font-size="11" fill="#564e53">north</text>
+<path d="M59.29 66.5L77.29 66.5L77.29 75.5L59.29 75.5Z" fill="#d55e00"/>
+<text x="85.29" y="74.91" font-size="11" fill="#564e53">south</text>
+<path d="M59.29 80.25L77.29 80.25L77.29 89.25L59.29 89.25Z" fill="#009e73"/>
+<text x="85.29" y="88.66" font-size="11" fill="#564e53">east</text>
+<path d="M433.32 37.38L433.32 269.25M506.33 37.38L506.33 269.25M579.34 37.38L579.34 269.25M652.36 37.38L652.36 269.25" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M389.52 269.25L696.16 269.25M389.52 180.92L696.16 180.92M389.52 92.58L696.16 92.58" fill="none" stroke="#e9e4e6" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<g clip-path="url(#c2)">
+<path d="M404.12 214.48L462.53 214.48L462.53 269.25L404.12 269.25ZM477.13 198.58L535.54 198.58L535.54 269.25L477.13 269.25ZM550.14 187.98L608.55 187.98L608.55 269.25L550.14 269.25ZM623.15 177.38L681.56 177.38L681.56 269.25L623.15 269.25Z" fill="#0072b2"/>
+<path d="M404.12 175.62L462.53 175.62L462.53 214.48L404.12 214.48ZM477.13 147.35L535.54 147.35L535.54 198.58L477.13 198.58ZM550.14 133.22L608.55 133.22L608.55 187.98L550.14 187.98ZM623.15 99.65L681.56 99.65L681.56 177.38L623.15 177.38Z" fill="#d55e00"/>
+<path d="M404.12 149.12L462.53 149.12L462.53 175.62L404.12 175.62ZM477.13 117.32L535.54 117.32L535.54 147.35L477.13 147.35ZM550.14 87.28L608.55 87.28L608.55 133.22L550.14 133.22ZM623.15 48.42L681.56 48.42L681.56 99.65L623.15 99.65Z" fill="#009e73"/>
+</g>
+<path d="M389.52 37.38L389.52 269.25L696.16 269.25" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<path d="M433.32 269.25L433.32 273.25M506.33 269.25L506.33 273.25M579.34 269.25L579.34 273.25M652.36 269.25L652.36 273.25M389.52 269.25L385.52 269.25M389.52 180.92L385.52 180.92M389.52 92.58L385.52 92.58" fill="none" stroke="#6b6268" stroke-width="1" stroke-linecap="butt" stroke-linejoin="miter"/>
+<text x="433.32" y="284.06" font-size="11" fill="#564e53" text-anchor="middle">2021</text>
+<text x="506.33" y="284.06" font-size="11" fill="#564e53" text-anchor="middle">2022</text>
+<text x="579.34" y="284.06" font-size="11" fill="#564e53" text-anchor="middle">2023</text>
+<text x="652.36" y="284.06" font-size="11" fill="#564e53" text-anchor="middle">2024</text>
+<text x="381.52" y="273.15" font-size="11" fill="#564e53" text-anchor="end">0</text>
+<text x="381.52" y="184.82" font-size="11" fill="#564e53" text-anchor="end">5</text>
+<text x="381.52" y="96.49" font-size="11" fill="#564e53" text-anchor="end">10</text>
+<text x="542.84" y="27.22" font-size="14" fill="#1f1b1e" text-anchor="middle">Stacked</text>
+</svg>

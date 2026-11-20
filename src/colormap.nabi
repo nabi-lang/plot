@@ -1,0 +1,190 @@
+//! Colormaps: 256-entry lookup tables, as matplotlib builds them, from
+//! the published data (tables.nabi) or from control colours.
+
+mod tables;
+
+use pkg::Color;
+
+/// A map from [0, 1] to colours: 256 entries, looked up as matplotlib
+/// does (`v` in `[k / 256, (k + 1) / 256)` gives entry `k`). NaN gives
+/// `bad`, values below 0 `under` and above 1 `over`, which default to
+/// transparent, the first entry and the last.
+///
+/// ```nabi
+/// use plot::{Color, Colormap};
+///
+/// let m = Colormap::viridis();
+/// assert(m.at(0.0) == Color::rgb(68, 1, 84));
+/// assert(m.at(1.0) == Color::rgb(253, 231, 37));
+/// assert(m.at(f64::NAN).a == 0);
+/// ```
+#[derive(Clone, Debug)]
+pub struct Colormap {
+    /// The name, `"viridis"` or `"custom"`; reversed maps end in `_r`.
+    pub name: str;
+    /// The 256 entries.
+    pub lut: List<Color>;
+    /// The colour for NaN.
+    pub bad: Color;
+    /// The colour below 0.
+    pub under: Color;
+    /// The colour above 1.
+    pub over: Color;
+}
+
+impl Colormap {
+    /// Perceptually uniform, blue to yellow (van der Walt and Smith,
+    /// 2015); the default.
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::viridis().name == "viridis");
+    /// ```
+    pub fn viridis() -> Colormap { listed("viridis", tables::VIRIDIS) }
+
+    /// Perceptually uniform, black to light pink.
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::magma().at(0.0) == plot::Color::rgb(0, 0, 4));
+    /// ```
+    pub fn magma() -> Colormap { listed("magma", tables::MAGMA) }
+
+    /// Perceptually uniform, black to light yellow.
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::inferno().at(1.0) == plot::Color::rgb(252, 255, 164));
+    /// ```
+    pub fn inferno() -> Colormap { listed("inferno", tables::INFERNO) }
+
+    /// Perceptually uniform, blue to yellow through magenta.
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::plasma().at(0.0) == plot::Color::rgb(13, 8, 135));
+    /// ```
+    pub fn plasma() -> Colormap { listed("plasma", tables::PLASMA) }
+
+    /// Viridis adjusted for colour-vision deficiency (Nunez, Anderton and
+    /// Renslow, 2018).
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::cividis().at(1.0) == plot::Color::rgb(254, 232, 56));
+    /// ```
+    pub fn cividis() -> Colormap { listed("cividis", tables::CIVIDIS) }
+
+    /// Moreland's diverging blue-white-red map (2009), for data around a
+    /// centre.
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::coolwarm().at(0.0) == plot::Color::rgb(59, 76, 192));
+    /// ```
+    pub fn coolwarm() -> Colormap {
+        let n = tables::COOLWARM.len() / 4;
+        let pos: List<f64> = List::from_fn(n, |i| tables::COOLWARM[4 * i]);
+        let rgb: List<(f64, f64, f64)> = List::from_fn(n, |i| (tables::COOLWARM[4 * i + 1], tables::COOLWARM[4 * i + 2], tables::COOLWARM[4 * i + 3]));
+        segmented("coolwarm", pos, rgb)
+    }
+
+    /// Black to white.
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::gray().at(0.5) == plot::Color::rgb(128, 128, 128));
+    /// ```
+    pub fn gray() -> Colormap {
+        segmented("gray", [0.0, 1.0], [(0.0, 0.0, 0.0), (1.0, 1.0, 1.0)])
+    }
+
+    /// The map named `name` (`"viridis"`, `"magma"`, `"inferno"`,
+    /// `"plasma"`, `"cividis"`, `"coolwarm"`, `"gray"`), reversed with a
+    /// `_r` suffix; `none` for another name.
+    ///
+    /// ```nabi
+    /// use plot::Colormap;
+    ///
+    /// assert((Colormap::named("magma_r") ?? Colormap::gray()).at(0.0) == Colormap::magma().at(1.0));
+    /// ```
+    pub fn named(name: str) -> Colormap | none {
+        if let base = name.strip_suffix("_r") {
+            return Colormap::named(base)?.reversed();
+        }
+        match name {
+            "viridis" => Colormap::viridis(),
+            "magma" => Colormap::magma(),
+            "inferno" => Colormap::inferno(),
+            "plasma" => Colormap::plasma(),
+            "cividis" => Colormap::cividis(),
+            "coolwarm" => Colormap::coolwarm(),
+            "gray" | "grey" => Colormap::gray(),
+            _ => none,
+        }
+    }
+
+    /// Evenly spaced control colours joined linearly.
+    ///
+    /// ```nabi
+    /// use plot::{Color, Colormap};
+    ///
+    /// let m = Colormap::from_colors([Color::rgb(0, 0, 0), Color::rgb(255, 0, 0)]);
+    /// assert(m.at(1.0) == Color::rgb(255, 0, 0));
+    /// ```
+    pub fn from_colors(colors: List<Color>) -> Colormap {
+        let n = colors.len();
+        if n == 0 { return Colormap::gray(); }
+        if n == 1 { return segmented("custom", [0.0, 1.0], [unit3(colors[0]), unit3(colors[0])]); }
+        let pos: List<f64> = List::from_fn(n, |i| (i as f64) / ((n - 1) as f64));
+        segmented("custom", pos, colors.iter().map(|c| unit3(c)).collect())
+    }
+
+    /// The colour for `v` in [0, 1].
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::gray().at(2.0) == plot::Color::rgb(255, 255, 255));
+    /// ```
+    pub fn at(self, v: f64) -> Color {
+        if v != v { return self.bad; }
+        if v < 0.0 { return self.under; }
+        if v > 1.0 { return self.over; }
+        let k = (v * 256.0).floor() as usize;
+        self.lut[k.min(255)]
+    }
+
+    /// The map run backwards.
+    ///
+    /// ```nabi
+    /// assert(plot::Colormap::gray().reversed().at(0.0) == plot::Color::rgb(255, 255, 255));
+    /// ```
+    pub fn reversed(self) -> Colormap {
+        let lut: List<Color> = List::from_fn(256, |i| self.lut[255 - i]);
+        let name = match self.name.strip_suffix("_r") {
+            s: str => s,
+            none => self.name + "_r",
+        };
+        Colormap { name, lut, bad: self.bad, under: lut[0], over: lut[255] }
+    }
+}
+
+fn unit3(c: Color) -> (f64, f64, f64) { ((c.r as f64) / 255.0, (c.g as f64) / 255.0, (c.b as f64) / 255.0) }
+
+fn listed<const N: usize>(name: str, t: [f64; N]) -> Colormap {
+    let lut: List<Color> = List::from_fn(N / 3, |i| Color::unit(t[3 * i], t[3 * i + 1], t[3 * i + 2]));
+    make(name, lut)
+}
+
+// matplotlib's LinearSegmentedColormap: entry i samples the control
+// curve at i / 255.
+fn segmented(name: str, pos: List<f64>, rgb: List<(f64, f64, f64)>) -> Colormap {
+    let lut: List<Color> = List::with_capacity(256);
+    let j = 0usize;
+    for i in 0..256 {
+        let x = (i as f64) / 255.0;
+        while j + 2 < pos.len() && pos[j + 1] < x { j += 1; }
+        let span = pos[j + 1] - pos[j];
+        let t = if span > 0.0 { ((x - pos[j]) / span).max(0.0).min(1.0) } else { 0.0 };
+        let a = rgb[j];
+        let b = rgb[j + 1];
+        lut.push(Color::unit(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t));
+    }
+    make(name, lut)
+}
+
+fn make(name: str, lut: List<Color>) -> Colormap {
+    Colormap { name, lut, bad: Color::clear(), under: lut[0], over: lut[lut.len() - 1] }
+}

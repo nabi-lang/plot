@@ -1,0 +1,56 @@
+// Tests: tick locators against R's labeling::extended, formatters,
+// colormaps against matplotlib's tables, SVG and terminal snapshots,
+// PNG round trips through a reader of our own, contours, statistics,
+// errors.
+
+mod decode;
+mod errors;
+mod figures;
+#[cfg(feature = "table")]
+mod frames;
+mod images;
+mod marks;
+mod numbers;
+mod snapshots;
+mod tables;
+mod ticks;
+
+use std::env;
+use std::fs;
+use std::random::{Rng, Xoshiro256PlusPlus};
+
+/// Panic unless `|a - b| <= tol`.
+pub fn close(a: f64, b: f64, tol: f64, what: str) {
+    if !((a - b).abs() <= tol) { panic(f"{what}: {a} != {b} (tol {tol})"); }
+}
+
+/// `n` uniform values in [lo, hi) from `seed`.
+pub fn uniform(n: usize, seed: u64, lo: f64, hi: f64) -> List<f64> {
+    let g = Xoshiro256PlusPlus::seed(seed);
+    List::from_fn(n, [ref g] |_| g.uniform(lo, hi))
+}
+
+/// `n` normal values from `seed`.
+pub fn normal(n: usize, seed: u64) -> List<f64> {
+    let g = Xoshiro256PlusPlus::seed(seed);
+    List::from_fn(n, [ref g] |_| g.normal(0.0, 1.0))
+}
+
+/// Compares `got` with a checked-in snapshot; `PLOT_BLESS=1 nabi test`
+/// from the repository root rewrites the snapshots instead.
+pub fn snapshot(name: str, want: str, got: str) {
+    if (try? env::var("PLOT_BLESS") ?? "") == "1" {
+        try! fs::write(f"tests/snapshots/{name}", got);
+        return;
+    }
+    if want != got {
+        let wl: List<str> = want.lines().collect();
+        let gl: List<str> = got.lines().collect();
+        for i in 0..wl.len().max(gl.len()) {
+            let a = if i < wl.len() { wl[i] } else { "<end>" };
+            let b = if i < gl.len() { gl[i] } else { "<end>" };
+            if a != b { panic(f"snapshot {name} differs at line {i + 1}:\n  want: {a}\n  got:  {b}\n(PLOT_BLESS=1 nabi test rewrites it)"); }
+        }
+        panic(f"snapshot {name} differs");
+    }
+}

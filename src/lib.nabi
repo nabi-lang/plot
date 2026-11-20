@@ -1,0 +1,45 @@
+//! Scientific plotting to SVG, PNG and the terminal, in pure Nabi.
+
+pub mod axes;
+pub mod calendar;
+pub mod color;
+pub mod colormap;
+pub mod contour;
+pub mod data;
+pub mod error;
+pub mod figure;
+pub mod font;
+pub mod format;
+#[cfg(feature = "table")]
+pub mod frame;
+pub mod layer;
+pub mod ops;
+pub mod path;
+pub mod png;
+pub mod quick;
+pub mod raster;
+pub mod scale;
+pub mod scene;
+pub mod stat;
+pub mod svg;
+pub mod term;
+pub mod text;
+pub mod theme;
+pub mod ticks;
+
+mod layout;
+
+pub use axes::{Axes, axes};
+pub use calendar::{date, datetime};
+pub use color::{Color, ColorSpec};
+pub use colormap::Colormap;
+pub use data::{Data, Grid};
+pub use error::PlotError;
+pub use figure::Figure;
+pub use format::Format;
+pub use layer::{Dash, Loc, Marker, StepAt};
+pub use path::Path;
+pub use quick::{Plottable, area, bar, boxplot, contour, contourf, errorbar, fill_between, heatmap, hist, imshow, line, linspace, png, quiver, save, scatter, show, step, svg, violin};
+pub use scale::Scale;
+pub use stat::Bins;
+pub use theme::Theme;

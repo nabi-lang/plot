@@ -1,0 +1,142 @@
+// Figures: inputs of every kind, layout operators, determinism, every
+// plot type renders, odd data does not panic.
+
+use pkg::figure::Node;
+use pkg::ops::MapsTo;
+use pkg::tests::suite::{normal, uniform};
+use pkg::{Axes, Bins, Colormap, Dash, Figure, Format, Loc, Marker, Scale, StepAt, Theme};
+use core::array::{Array, Matrix, Vector};
+
+fn every_kind() -> Axes {
+    let x = pkg::linspace(0.0, 10.0, 40);
+    let y: List<f64> = x.iter().map(|v| v.sin()).collect();
+    pkg::axes()
+        .line(x, y).label("line").dash(Dash::DashDot).marker(Marker::Diamond)
+        .step(x, y, StepAt::Pre).label("step")
+        .scatter(x, y).sizes(List::from_fn(40, |i| 2.0 + (i as f64) * 0.2)).values(x).cmap(Colormap::cividis())
+        .bar_at([1.0, 2.0], [0.5, -0.5], width: 0.3)
+        .area(x, y).label("area")
+        .errorbar_xy([3.0], [0.0], [0.2], [0.4], [0.1], [0.3])
+        .quiver([5.0, 6.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0])
+        .text(2.0, 0.5, "text $\\beta$").annotate("peak", 1.6, 1.0, 3.0, 1.4)
+        .hline(0.0).vline(5.0).hspan(-0.2, 0.2).vspan(7.0, 8.0)
+        .legend(Loc::Outside)
+}
+
+#[test]
+fn data_inputs() {
+    let a: Vector<f64> = [1, 2, 3];
+    let m: Matrix<f64> = [[1, 2], [3, 4]];
+    let i: Array<i64, 1> = [4, 5, 6];
+    let f: List<f32> = [1.0f32, 2.0f32, 3.0f32];
+    let ax = pkg::axes().line(a, i).scatter(0..3, f).line(m, [1, 2, 3, 4]).line([1.0, 2.0, 3.0], [1i32, 2i32, 3i32]);
+    assert(ax.len() == 4);
+    assert((try! ax.svg()).contains("<circle"));
+    let g = pkg::heatmap(m).contour(m, [2.5]).contourf([[1.0, 2.0], [3.0, 4.0]]);
+    assert((try! g.svg()).contains("<image"));
+}
+
+#[test]
+fn every_kind_renders() {
+    let ax = every_kind();
+    let svg = try! ax.svg();
+    for part in ["stroke-dasharray", ">peak<", ">text \u{3b2}<", ">area<"] { assert(svg.contains(part)); }
+    let png = try! ax.png();
+    assert(png.len() > 1000);
+    let t = try! ax.term(cols: 60, rows: 20);
+    assert(t.lines().count() == 20);
+    // Same input, same bytes.
+    assert(try! every_kind().svg() == svg);
+    assert(try! every_kind().png() == png);
+}
+
+#[test]
+fn distributions_render() {
+    let a = normal(300, 1);
+    let b = normal(300, 2);
+    let ax = pkg::hist(a, Bins::Count(20), density: true).hist(b, Bins::Edges([-3.0, -1.0, 0.0, 0.5, 3.0]));
+    assert(ax.len() > 2);
+    let bx = pkg::boxplot([a, b]) + pkg::violin([a, b], ["1", "2"]);
+    let svg = try! bx.svg();
+    assert(svg.contains(">1<") && svg.contains(">2<"));
+    let grouped = pkg::axes().bars(["x", "y"], [("a", [1.0, 2.0]), ("b", [2.0, 1.0])]).barh(["p", "q"], [3, 4]);
+    assert((try! grouped.svg()).contains(">b<"));
+}
+
+#[test]
+fn layout_operators() {
+    let a = pkg::line([0, 1], [0, 1]);
+    let b = pkg::scatter([0, 1], [1, 0]);
+    let c = pkg::hist([1.0, 2.0]);
+    let row = a | b | c;
+    match row.root {
+        Row(xs) => assert(xs.len() == 3),
+        _ => panic("a | b | c is one row"),
+    }
+    let grid = (a | b) / c;
+    match grid.root {
+        Col(xs) => assert(xs.len() == 2),
+        _ => panic("(a | b) / c is a column"),
+    }
+    assert(grid.panels().len() == 3);
+    let f = (a / b) | (b / a);
+    assert(f.panels().len() == 4);
+    // Calls combine as they are: `/` binds tighter than `|`.
+    let calls = pkg::line([0, 1], [0, 1]) | pkg::hist([1.0, 2.0]) / pkg::scatter([0, 1], [1, 0]);
+    match calls.root {
+        Row(xs) => assert(xs.len() == 2 && calls.panels().len() == 3),
+        _ => panic("a | b / c is a row"),
+    }
+    let svg = try! f.title("four").svg();
+    assert(svg.count("clipPath id") == 4);
+    // `+` overlays.
+    let o = a + b + c;
+    assert(o.len() == 3);
+    let g = Figure::grid([a, b, c], 2);
+    match g.root {
+        Col(rows) => assert(rows.len() == 2),
+        _ => panic("grid"),
+    }
+    let _ = Node::Blank;
+}
+
+#[test]
+fn axes_options() {
+    let x = [1.0, 10.0, 100.0, 1000.0];
+    let ax = pkg::line(x, x)
+        .log("xy").minor().grid(false).invert_x().aspect(1.0)
+        .xticks([1.0, 1000.0], ["one", "thousand"]).yformat(Format::Si)
+        .title("opts").xlim(0.5, 2000.0)
+        .theme(Theme::dark().transparent());
+    let svg = try! ax.svg();
+    assert(svg.contains(">thousand<") && svg.contains(">1k<") && !svg.contains("<rect width=\"100%\""));
+    let sym = pkg::line([-100.0, 0.0, 100.0], [1, 2, 3]).xscale(Scale::Symlog { base: 10.0, linthresh: 1.0 });
+    assert((try! sym.svg()).contains("10<"));
+    let twin = pkg::line([0, 1], [0, 1]).right().line([0, 1], [5, 3]).ylim(0.0, 10.0).yticks([0.0, 5.0, 10.0]).left().ylabel("L");
+    let svg = try! twin.svg();
+    assert(svg.contains(">10<") && svg.contains(">L<"));
+}
+
+#[test]
+fn odd_data_does_not_panic() {
+    let nan = [1.0, f64::NAN, 3.0, f64::INFINITY, -2.0];
+    let x = [0.0, 1.0, 2.0, 3.0, 4.0];
+    let ax = pkg::line(x, nan).scatter(x, nan).bar_at(x, nan).fill_between(x, nan, x).errorbar(x, nan, nan);
+    _ = try! ax.svg();
+    _ = try! ax.png();
+    _ = try! ax.term(cols: 30, rows: 10);
+    _ = try! pkg::hist(nan).svg();
+    _ = try! pkg::axes().svg();
+    _ = try! pkg::line([5.0], [5.0]).svg();
+    _ = try! pkg::line([1e-300, 2e-300], [1e300, -1e300]).svg();
+    _ = try! pkg::heatmap([[f64::NAN, 1.0], [2.0, f64::NAN]]).contourf([[f64::NAN, 1.0], [2.0, 3.0]]).svg();
+    // Random data through every backend.
+    for seed in 0..5 {
+        let a = uniform(200, seed, -1e3, 1e3);
+        let b = normal(200, seed + 100);
+        let f = (pkg::scatter(a, b).values(a) | pkg::hist(b)) / pkg::line(a, b);
+        _ = try! f.svg();
+        _ = try! f.png();
+    }
+    let _ = "x" ↦ "y";
+}

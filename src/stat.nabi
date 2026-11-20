@@ -1,0 +1,186 @@
+//! The statistics a few plot types draw: histogram bins (NumPy's rules),
+//! box plot quartiles (linear interpolation, NumPy's default) and
+//! Gaussian kernel density estimates (Scott's bandwidth) for violins.
+
+use pkg::layer::BoxStats;
+
+/// How a histogram picks its bins. The rules are NumPy's
+/// `histogram_bin_edges`: each gives a width, and the data range is cut
+/// into `ceil(range / width)` equal bins.
+///
+/// ```nabi
+/// use plot::stat::{Bins, edges};
+///
+/// assert(edges([1.0, 2.0, 3.0, 4.0], Bins::Count(3)) == [1.0, 2.0, 3.0, 4.0]);
+/// assert(edges([0.0, 10.0], Bins::Width(5.0)) == [0.0, 5.0, 10.0]);
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+pub enum Bins {
+    /// This many equal bins.
+    Count(usize),
+    /// Bins of this width from the minimum.
+    Width(f64),
+    /// These edges, rising.
+    Edges(List<f64>),
+    /// The smaller width of `Sturges` and `Fd` (NumPy's `"auto"`).
+    Auto,
+    /// `range / (log2(n) + 1)`.
+    Sturges,
+    /// Freedman-Diaconis: `2 iqr / n^(1/3)`.
+    Fd,
+    /// `range / sqrt(n)`.
+    Sqrt,
+}
+
+/// The finite values of `xs`, sorted.
+pub(pkg) fn sorted_finite(xs: List<f64>) -> List<f64> {
+    let v: List<f64> = xs.iter().filter(|x| x.is_finite()).collect();
+    v.sort_by(|a, b| a.total_cmp(b));
+    v
+}
+
+/// The `q` quantile of sorted values by linear interpolation (NumPy's
+/// default, Hyndman and Fan type 7).
+///
+/// ```nabi
+/// assert(plot::stat::quantile([1.0, 2.0, 3.0, 4.0], 0.25) == 1.75);
+/// ```
+pub fn quantile(sorted: List<f64>, q: f64) -> f64 {
+    let n = sorted.len();
+    if n == 0 { return f64::NAN; }
+    let h = (n - 1) as f64 * q;
+    let i = h.floor() as usize;
+    if i + 1 >= n { return sorted[n - 1]; }
+    sorted[i] + (h - (i as f64)) * (sorted[i + 1] - sorted[i])
+}
+
+/// Bin edges for `xs` (NaN and infinities ignored).
+///
+/// ```nabi
+/// assert(plot::stat::edges([0.0, 1.0, 2.0, 3.0], plot::Bins::Count(3)) == [0.0, 1.0, 2.0, 3.0]);
+/// ```
+pub fn edges(xs: List<f64>, bins: Bins) -> List<f64> {
+    let v = sorted_finite(xs);
+    let n = v.len();
+    if let Edges(e) = bins { return e.clone(); }
+    if n == 0 { return [0.0, 1.0]; }
+    let lo = v[0];
+    let hi = v[n - 1];
+    if !(hi > lo) {
+        // All values equal: one bin around them, as NumPy does.
+        return match bins {
+            Count(k) => List::from_fn(k.max(1) + 1, |i| lo - 0.5 + (i as f64) / (k.max(1) as f64)),
+            _ => [lo - 0.5, lo + 0.5],
+        };
+    }
+    let range = hi - lo;
+    let nf = n as f64;
+    let sturges = range / (nf.log2() + 1.0);
+    let fd = 2.0 * (quantile(v, 0.75) - quantile(v, 0.25)) / nf.cbrt();
+    let width = match bins {
+        Count(k) => range / (k.max(1) as f64),
+        Width(w) => if w > 0.0 { w } else { sturges },
+        Sturges => sturges,
+        Fd => if fd > 0.0 { fd } else { sturges },
+        Sqrt => range / nf.sqrt(),
+        _ => if fd > 0.0 { fd.min(sturges) } else { sturges },
+    };
+    let count = match bins {
+        Count(k) => k.max(1),
+        Width(_) => ((range / width) - 1e-9).ceil().max(1.0) as usize,
+        _ => (range / width).ceil().max(1.0).min(100000.0) as usize,
+    };
+    let step = match bins {
+        Width(_) => width,
+        _ => range / (count as f64),
+    };
+    List::from_fn(count + 1, |i| if i == count && !(bins is Width) { hi } else { lo + (i as f64) * step })
+}
+
+/// Counts of `xs` in the bins of `edges`: `[e_i, e_i+1)`, the last bin
+/// closed on the right.
+///
+/// ```nabi
+/// assert(plot::stat::counts([0.5, 1.5, 1.7, 2.5], [0.5, 1.5, 2.5]) == [1.0, 3.0]);
+/// ```
+pub fn counts(xs: List<f64>, edges: List<f64>) -> List<f64> {
+    let k = if edges.len() > 0 { edges.len() - 1 } else { 0 };
+    let out: List<f64> = List::filled(k, 0.0);
+    if k == 0 { return out; }
+    let lo = edges[0];
+    let hi = edges[k];
+    for x in xs {
+        if !(x >= lo && x <= hi) { continue; }
+        // Binary search: the last edge <= x.
+        let a = 0usize;
+        let b = k;
+        while b - a > 1 {
+            let m = (a + b) / 2;
+            if edges[m] <= x { a = m; } else { b = m; }
+        }
+        out[a] += 1.0;
+    }
+    out
+}
+
+/// Box plot numbers: quartiles, whiskers at the most extreme values
+/// within 1.5 IQR of the box (Tukey), and the values beyond them.
+///
+/// ```nabi
+/// let s = plot::stat::box_stats([1.0, 2.0, 3.0, 4.0, 100.0]);
+/// assert(s.median == 3.0 && s.hi == 4.0 && s.fliers == [100.0]);
+/// ```
+pub fn box_stats(xs: List<f64>) -> BoxStats {
+    let v = sorted_finite(xs);
+    let q1 = quantile(v, 0.25);
+    let q3 = quantile(v, 0.75);
+    let iqr = q3 - q1;
+    let lo_fence = q1 - 1.5 * iqr;
+    let hi_fence = q3 + 1.5 * iqr;
+    let lo = q1;
+    let hi = q3;
+    let fliers: List<f64> = [];
+    let sum = 0.0;
+    for x in v {
+        sum += x;
+        if x < lo_fence || x > hi_fence {
+            fliers.push(x);
+        } else {
+            if x < lo { lo = x; }
+            if x > hi { hi = x; }
+        }
+    }
+    BoxStats { q1, median: quantile(v, 0.5), q3, lo, hi, mean: sum / (v.len() as f64), fliers }
+}
+
+/// A Gaussian kernel density estimate of `xs` at `points` evenly spaced
+/// values over the data range, with Scott's bandwidth `n^(-1/5) std`.
+/// Returns the positions and densities.
+///
+/// ```nabi
+/// let (at, d) = plot::stat::kde([0.0, 1.0, 2.0], 5);
+/// assert(at.len() == 5 && d[2] > d[0]);
+/// ```
+pub fn kde(xs: List<f64>, points: usize) -> (List<f64>, List<f64>) {
+    let v = sorted_finite(xs);
+    let n = v.len();
+    if n == 0 { return ([], []); }
+    let nf = n as f64;
+    let mean = v.iter().sum() / nf;
+    let var = v.iter().map(|x| (x - mean) * (x - mean)).sum() / (if n > 1 { nf - 1.0 } else { 1.0 });
+    let bw = (var.sqrt() * nf ** -0.2).max(1e-12);
+    let lo = v[0];
+    let hi = v[n - 1];
+    let m = points.max(2);
+    let at: List<f64> = List::from_fn(m, |i| lo + (hi - lo) * (i as f64) / ((m - 1) as f64));
+    let norm = 1.0 / (nf * bw * (2.0 * f64::PI).sqrt());
+    let dens: List<f64> = List::from_fn(m, |i| {
+        let s = 0.0;
+        for x in v {
+            let z = (at[i] - x) / bw;
+            s += (-0.5 * z * z).exp();
+        }
+        s * norm
+    });
+    (at, dens)
+}

@@ -1,0 +1,415 @@
+// One Axes in its cell: colours from the cycle, view limits from the
+// data (with margins that stop at sticky edges such as a bar's zero),
+// ticks, the plot rectangle that leaves room for labels, then the frame
+// around the layers.
+
+use pkg::axes::Axis;
+use pkg::format;
+use pkg::layer::{Layer, Side};
+use pkg::layout::keys;
+use pkg::layout::marks;
+use pkg::layout::{Ctx, VAlign};
+use pkg::path::Path;
+use pkg::scene::{Anchor, Item, Rect, Stroke};
+use pkg::ticks;
+use pkg::{Axes, Color, PlotError, Scale};
+
+/// The map from data values on one axis to px.
+#[derive(Clone, Copy, Debug)]
+pub(pkg) struct Tx {
+    pub(pkg) p0: f64;
+    pub(pkg) p1: f64;
+    pub(pkg) u0: f64;
+    pub(pkg) u1: f64;
+    pub(pkg) scale: Scale;
+}
+
+impl Tx {
+    pub(pkg) fn at(self, v: f64) -> f64 {
+        let u = self.scale.forward(v);
+        self.p0 + (u - self.u0) / (self.u1 - self.u0) * (self.p1 - self.p0)
+    }
+}
+
+/// Data limits of one axis being collected.
+pub(pkg) struct Lim {
+    pub(pkg) lo: f64;
+    pub(pkg) hi: f64;
+    pub(pkg) sticky: List<f64>;
+    pub(pkg) scale: Scale;
+}
+
+impl Lim {
+    fn new(scale: Scale) -> Lim { Lim { lo: f64::INFINITY, hi: f64::NEG_INFINITY, sticky: [], scale } }
+
+    pub(pkg) fn add(ref self, v: f64) {
+        if !self.scale.accepts(v) { return; }
+        if v < self.lo { self.lo = v; }
+        if v > self.hi { self.hi = v; }
+    }
+
+    pub(pkg) fn add_all(ref self, vs: List<f64>) {
+        for v in vs { self.add(v); }
+    }
+}
+
+/// An axis after layout: its map and its ticks.
+#[derive(Clone)]
+pub(pkg) struct Laid {
+    pub(pkg) tx: Tx;
+    pub(pkg) major: List<f64>;
+    pub(pkg) minor: List<f64>;
+    pub(pkg) labels: List<str>;
+    pub(pkg) offset: str;
+}
+
+pub(pkg) fn draw(c: Ctx, ax: Axes, cell: Rect) throws (PlotError) {
+    if !ax.errors.is_empty() { throw ax.errors[0]; }
+    let th = c.theme;
+    let colors = try resolve(c, ax.layers);
+    let has_right = ax.layers.iter().any(|l| l.side == Side::Right);
+
+    // View limits.
+    let lx = Lim::new(ax.x.scale);
+    let ly = Lim::new(ax.y.scale);
+    let ly2 = Lim::new(ax.y2.scale);
+    for l in ax.layers {
+        if l.side == Side::Right { marks::extent(l.mark, ref lx, ref ly2); } else { marks::extent(l.mark, ref lx, ref ly); }
+    }
+    let (x0, x1) = try view(ax.x, lx, "x");
+    let (y0, y1) = try view(ax.y, ly, "y");
+    let (r0, r1) = if has_right { try view(ax.y2, ly2, "right y") } else { (0.0, 1.0) };
+
+    // Room around the plot: estimate, lay out the ticks, measure, redo.
+    let cells = c.cells();
+    let pad = if cells { 0.0 } else { 10.0 };
+    let tl = th.tick_length;
+    let fs = th.font_size;
+    let lh = c.line_h(fs);
+    let llh = c.line_h(th.label_size);
+    let top = cell.y + pad + (if ax.title.is_empty() { 0.0 } else { c.line_h(th.title_size) * 1.25 });
+    let cb = keys::colorbar_width(c, ax, colors);
+    let legend_w = keys::outside_width(c, ax, colors);
+    let plot = Rect { x: cell.x + pad + 50.0, y: top, w: cell.w - 2.0 * pad - 70.0 - cb - legend_w, h: cell.h - (top - cell.y) - pad - 40.0 };
+    let gx = laid(c, ax.x, x0, x1, plot, true);
+    let gy = laid(c, ax.y, y0, y1, plot, false);
+    let gr = laid(c, ax.y2, r0, r1, plot, false);
+    for _pass in 0..2 {
+        let yw = widest(c, gy.labels, fs);
+        let rw = if has_right { widest(c, gr.labels, fs) } else { 0.0 };
+        let left = yw + tl + (if cells { 8.0 } else { 4.0 }) + (if ax.y.label.is_empty() { 0.0 } else { llh + (if cells { 8.0 } else { 2.0 }) });
+        let xlast = if gx.labels.is_empty() { 0.0 } else { c.width(gx.labels[gx.labels.len() - 1], fs) / 2.0 };
+        let right = if has_right {
+            rw + tl + 4.0 + (if ax.y2.label.is_empty() { 0.0 } else { llh + 2.0 })
+        } else {
+            xlast.max(if cells { 8.0 } else { 6.0 })
+        };
+        let bottom = (if gx.labels.is_empty() { 0.0 } else { lh }) + tl + (if cells { 0.0 } else { 3.0 }) + (if ax.x.label.is_empty() { 0.0 } else { llh + (if cells { 0.0 } else { 2.0 }) });
+        let extra_top = if gy.offset.is_empty() && gr.offset.is_empty() { 0.0 } else { lh };
+        let px = cell.x + pad + left;
+        let py = top + extra_top + (if cells { 0.0 } else { fs * 0.5 });
+        let pw = (cell.x + cell.w - pad - right - cb - legend_w) - px;
+        let ph = (cell.y + cell.h - pad - bottom) - py;
+        plot = Rect { x: px, y: py, w: pw.max(10.0), h: ph.max(10.0) };
+        if cells {
+            // Axis lines on the outer dots of whole character cells.
+            let x0 = (plot.x / 8.0).round() * 8.0;
+            let x1 = (plot.right() / 8.0).floor() * 8.0 - 2.0;
+            let y0 = (plot.y / 16.0).ceil() * 16.0 + 2.0;
+            let y1 = (plot.bottom() / 16.0).floor() * 16.0 - 4.0;
+            plot = Rect { x: x0, y: y0, w: (x1 - x0).max(16.0), h: (y1 - y0).max(16.0) };
+        }
+        if ax.aspect > 0.0 && ax.x.scale == Scale::Linear && ax.y.scale == Scale::Linear {
+            // y px per unit = aspect * x px per unit.
+            let want_h = plot.w * ax.aspect * (y1 - y0) / (x1 - x0);
+            if want_h <= plot.h {
+                plot = Rect { x: plot.x, y: plot.y + (plot.h - want_h) / 2.0, w: plot.w, h: want_h };
+            } else {
+                let want_w = plot.h / (ax.aspect * (y1 - y0) / (x1 - x0));
+                plot = Rect { x: plot.x + (plot.w - want_w) / 2.0, y: plot.y, w: want_w, h: plot.h };
+            }
+        }
+        gx = laid(c, ax.x, x0, x1, plot, true);
+        gy = laid(c, ax.y, y0, y1, plot, false);
+        if has_right { gr = laid(c, ax.y2, r0, r1, plot, false); }
+    }
+
+    // Background and grid.
+    if !cells && th.panel.a > 0 && th.panel != c.scene.background {
+        c.push(Item::Fill { path: Path::rect(plot.x, plot.y, plot.w, plot.h), color: th.panel, clip: 0 });
+    }
+    let clip = c.clip(plot);
+    if ax.x.grid ?? th.show_grid { grid_lines(c, gx, plot, true); }
+    if ax.y.grid ?? th.show_grid { grid_lines(c, gy, plot, false); }
+
+    // Layers.
+    for i in 0..ax.layers.len() {
+        let l = ax.layers[i];
+        let ty = if l.side == Side::Right { gr.tx } else { gy.tx };
+        try marks::draw(c, l, colors[i], gx.tx, ty, plot, clip);
+    }
+
+    // Frame, ticks and labels.
+    frame(c, ax, plot, gx, gy, gr, has_right);
+    if !ax.title.is_empty() {
+        c.text(plot.x + plot.w / 2.0, top - c.line_h(th.title_size) * 0.55, ax.title, th.title_size, th.ink, Anchor::Middle, VAlign::Center);
+    }
+    keys::legend(c, ax, colors, plot, gx.tx, gy.tx);
+    keys::colorbar(c, ax, colors, plot);
+}
+
+// Colour of each layer: its own or the next in the cycle.
+fn resolve(c: Ctx, layers: List<Layer>) throws (PlotError) -> List<Color> {
+    let out: List<Color> = [];
+    let k = 0usize;
+    for l in layers {
+        let uses_cycle = match l.mark {
+            Image { .. } | Contour { .. } | Text { .. } | Note { .. } | Rule { .. } | Span { .. } => false,
+            _ => true,
+        };
+        let base = match l.style.color {
+            col: Color => col,
+            s: str => try spec(c, s),
+            none => {
+                if uses_cycle {
+                    k += 1;
+                    c.theme.series(k - 1)
+                } else {
+                    match l.mark {
+                        Text { .. } | Note { .. } => c.theme.ink,
+                        _ => c.theme.axis,
+                    }
+                }
+            }
+        };
+        out.push(base);
+    }
+    out
+}
+
+/// A colour string, `"C0"` to `"C9"` from the theme's cycle.
+pub(pkg) fn spec(c: Ctx, s: str) throws (PlotError) -> Color {
+    let t = s.trim();
+    if t.len() >= 2 && (t.starts_with("C") || t.starts_with("c")) {
+        if let n = try? t[1:].parse::<usize>() { return c.theme.series(n); }
+    }
+    try Color::parse(t)
+}
+
+// The view limits of an axis.
+fn view(a: Axis, l: Lim, name: str) throws (PlotError) -> (f64, f64) {
+    let s = a.scale;
+    if a.lo == a.lo && !s.accepts(a.lo) { throw PlotError::Scale { what: f"{name} limit {a.lo} is not on the {scale_name(s)} scale; pass a positive limit for a log axis" }; }
+    if a.hi == a.hi && !s.accepts(a.hi) { throw PlotError::Scale { what: f"{name} limit {a.hi} is not on the {scale_name(s)} scale" }; }
+    let n = a.categories.len();
+    let (lo, hi) = if n > 0 {
+        (l.lo.min(-0.5), l.hi.max((n as f64) - 0.5))
+    } else if l.lo <= l.hi {
+        (l.lo, l.hi)
+    } else {
+        match s {
+            Log(_) => (1.0, 10.0),
+            _ => (0.0, 1.0),
+        }
+    };
+    if n > 0 {
+        lo = lo.min(-0.6);
+        hi = hi.max((n as f64) - 0.4);
+    }
+    let (u0, u1) = (s.forward(lo), s.forward(hi));
+    if u1 - u0 <= 0.0 {
+        let d = if u0 == 0.0 { 1.0 } else { u0.abs() * 0.05 };
+        let d = match s {
+            Log(_) => 0.5,
+            _ => d,
+        };
+        lo = s.inverse(u0 - d);
+        hi = s.inverse(u1 + d);
+    } else if a.margin > 0.0 && n == 0 {
+        let m = (u1 - u0) * a.margin;
+        let nlo = s.inverse(u0 - m);
+        let nhi = s.inverse(u1 + m);
+        for st in l.sticky {
+            if nlo < st && st <= lo { nlo = st; }
+            if nhi > st && st >= hi { nhi = st; }
+        }
+        lo = nlo;
+        hi = nhi;
+    }
+    if a.lo == a.lo { lo = a.lo; }
+    if a.hi == a.hi { hi = a.hi; }
+    if !(lo < hi) {
+        if lo == hi { return (lo - 0.5, hi + 0.5); }
+        throw PlotError::Scale { what: f"{name} limits {lo} to {hi} are reversed; pass them low first, and flip the axis with `invert_{name.trim_start_matches("right ")}()`" };
+    }
+    (lo, hi)
+}
+
+fn scale_name(s: Scale) -> str {
+    match s {
+        Linear => "linear",
+        Log(_) => "log",
+        Symlog { .. } => "symlog",
+        Date => "date",
+    }
+}
+
+// Ticks and labels of an axis laid along `plot`.
+fn laid(c: Ctx, a: Axis, lo: f64, hi: f64, plot: Rect, horizontal: bool) -> Laid {
+    let s = a.scale;
+    let tx = if horizontal {
+        let (p0, p1) = if a.inverted { (plot.right(), plot.x) } else { (plot.x, plot.right()) };
+        Tx { p0, p1, u0: s.forward(lo), u1: s.forward(hi), scale: s }
+    } else {
+        let (p0, p1) = if a.inverted { (plot.y, plot.bottom()) } else { (plot.bottom(), plot.y) };
+        Tx { p0, p1, u0: s.forward(lo), u1: s.forward(hi), scale: s }
+    };
+    let len = if horizontal { plot.w } else { plot.h };
+    let spacing = if horizontal { if c.cells() { 96.0 } else { 90.0 } } else { if c.cells() { 48.0 } else { 52.0 } };
+    let m = ((len / spacing).floor() as usize).max(2).min(10);
+    if !a.categories.is_empty() && a.ticks is none {
+        let n = a.categories.len();
+        return Laid { tx, major: List::from_fn(n, |i| i as f64), minor: [], labels: a.categories.clone(), offset: "" };
+    }
+    let (major, minor) = match a.ticks {
+        t: List<f64> => (t.iter().filter(|v| v >= lo - 1e-12 * (hi - lo) && v <= hi + 1e-12 * (hi - lo)).collect::<List<f64>>(), []),
+        none => auto_ticks(s, lo, hi, m),
+    };
+    let (labels, offset) = match a.tick_labels {
+        l: List<str> => (l.clone(), ""),
+        none => format::labels(major, s, a.format),
+    };
+    let fixed_labels = !(a.tick_labels is none);
+    if fixed_labels && labels.len() != major.len() {
+        labels = List::from_fn(major.len(), |i| if i < labels.len() { labels[i] } else { "" });
+    }
+    Laid { tx, major, minor: if a.minor && !c.cells() { minor } else { [] }, labels, offset }
+}
+
+// At least three ticks on a linear axis: a coarse step can leave one.
+fn auto_ticks(s: Scale, lo: f64, hi: f64, m: usize) -> (List<f64>, List<f64>) {
+    let r = ticks::locate(s, lo, hi, m);
+    if s != Scale::Linear || r.0.len() >= 3 { return r; }
+    for extra in 1..5 {
+        let r2 = ticks::locate(s, lo, hi, m + extra);
+        if r2.0.len() >= 3 { return r2; }
+    }
+    r
+}
+
+fn widest(c: Ctx, labels: List<str>, size: f64) -> f64 {
+    let w = 0.0;
+    for l in labels { w = w.max(c.width(l, size)); }
+    w
+}
+
+fn grid_lines(c: Ctx, g: Laid, plot: Rect, vertical: bool) {
+    let p = Path::new();
+    for v in g.major {
+        let q = g.tx.at(v);
+        if vertical {
+            p.move_to(q, plot.y);
+            p.line_to(q, plot.bottom());
+        } else {
+            p.move_to(plot.x, q);
+            p.line_to(plot.right(), q);
+        }
+    }
+    if p.is_empty() { return; }
+    c.push(Item::Line { path: p, stroke: Stroke { color: c.theme.grid, width: c.theme.grid_width, dash: [], round: false }, clip: 0 });
+}
+
+fn frame(c: Ctx, ax: Axes, plot: Rect, gx: Laid, gy: Laid, gr: Laid, has_right: bool) {
+    let th = c.theme;
+    let cells = c.cells();
+    let p = Path::new();
+    p.move_to(plot.x, plot.y);
+    p.line_to(plot.x, plot.bottom());
+    p.line_to(plot.right(), plot.bottom());
+    if th.box_frame || has_right {
+        p.move_to(plot.right(), plot.bottom());
+        p.line_to(plot.right(), plot.y);
+    }
+    if th.box_frame {
+        p.move_to(plot.x, plot.y);
+        p.line_to(plot.right(), plot.y);
+    }
+    let axis = Stroke { color: th.axis, width: th.axis_width, dash: [], round: false };
+    c.push(Item::Line { path: p, stroke: axis, clip: 0 });
+
+    // Ticks point out of the plot.
+    let tl = th.tick_length;
+    let t = Path::new();
+    let mt = Path::new();
+    for v in gx.major {
+        let q = gx.tx.at(v);
+        t.move_to(q, plot.bottom());
+        t.line_to(q, plot.bottom() + tl);
+    }
+    for v in gx.minor {
+        let q = gx.tx.at(v);
+        mt.move_to(q, plot.bottom());
+        mt.line_to(q, plot.bottom() + tl * 0.6);
+    }
+    for v in gy.major {
+        let q = gy.tx.at(v);
+        t.move_to(plot.x, q);
+        t.line_to(plot.x - tl, q);
+    }
+    for v in gy.minor {
+        let q = gy.tx.at(v);
+        mt.move_to(plot.x, q);
+        mt.line_to(plot.x - tl * 0.6, q);
+    }
+    if has_right {
+        for v in gr.major {
+            let q = gr.tx.at(v);
+            t.move_to(plot.right(), q);
+            t.line_to(plot.right() + tl, q);
+        }
+    }
+    if tl > 0.0 && !t.is_empty() { c.push(Item::Line { path: t, stroke: axis, clip: 0 }); }
+    if tl > 0.0 && !mt.is_empty() { c.push(Item::Line { path: mt, stroke: Stroke { color: th.axis, width: th.axis_width * 0.75, dash: [], round: false }, clip: 0 }); }
+
+    let fs = th.font_size;
+    let gap = if cells { 4.0 } else { 3.0 };
+    let ink = th.ink_muted;
+    for i in 0..gx.major.len() {
+        c.text(gx.tx.at(gx.major[i]), plot.bottom() + tl + gap, gx.labels[i], fs, ink, Anchor::Middle, VAlign::Top);
+    }
+    let hx = if cells { 8.0 } else { 4.0 };
+    for i in 0..gy.major.len() {
+        c.text(plot.x - tl - hx, gy.tx.at(gy.major[i]), gy.labels[i], fs, ink, Anchor::End, VAlign::Center);
+    }
+    if has_right {
+        for i in 0..gr.major.len() {
+            c.text(plot.right() + tl + hx, gr.tx.at(gr.major[i]), gr.labels[i], fs, ink, Anchor::Start, VAlign::Center);
+        }
+    }
+    if !gx.offset.is_empty() {
+        c.text(plot.right(), plot.bottom() + tl + gap + c.line_h(fs), gx.offset, fs, ink, Anchor::End, VAlign::Top);
+    }
+    if !gy.offset.is_empty() {
+        c.text(plot.x, plot.y - c.line_h(fs) * 0.4, gy.offset, fs, ink, Anchor::Start, VAlign::Bottom);
+    }
+    if has_right && !gr.offset.is_empty() {
+        c.text(plot.right(), plot.y - c.line_h(fs) * 0.4, gr.offset, fs, ink, Anchor::End, VAlign::Bottom);
+    }
+
+    // Axis titles.
+    let ls = th.label_size;
+    if !ax.x.label.is_empty() {
+        let y = plot.bottom() + tl + gap + (if gx.labels.is_empty() { 0.0 } else { c.line_h(fs) }) + (if cells { 0.0 } else { 2.0 });
+        c.text(plot.x + plot.w / 2.0, y, ax.x.label, ls, th.ink, Anchor::Middle, VAlign::Top);
+    }
+    if !ax.y.label.is_empty() {
+        let yw = widest(c, gy.labels, fs);
+        let x = plot.x - tl - hx - yw - (if cells { 16.0 } else { 4.0 + ls * 0.3 });
+        c.text(x - (if cells { 0.0 } else { ls * 0.95 }), plot.y + plot.h / 2.0, ax.y.label, ls, th.ink, Anchor::Middle, VAlign::Top, rotate: 90.0);
+    }
+    if has_right && !ax.y2.label.is_empty() {
+        let rw = widest(c, gr.labels, fs);
+        let x = plot.right() + tl + hx + rw + (if cells { 8.0 } else { 4.0 + ls * 0.3 });
+        c.text(x, plot.y + plot.h / 2.0, ax.y2.label, ls, th.ink, Anchor::Middle, VAlign::Top, rotate: 90.0);
+    }
+}

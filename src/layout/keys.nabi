@@ -1,0 +1,272 @@
+// Keys to the marks: the legend (placed where it covers the fewest data
+// points when asked for `Best`) and the colorbar.
+
+use pkg::format;
+use pkg::layer::{Layer, Loc, Marker};
+use pkg::layout::marks;
+use pkg::layout::panel::Tx;
+use pkg::layout::{Ctx, VAlign};
+use pkg::path::Path;
+use pkg::scene::{Anchor, Item, Rect, Stroke};
+use pkg::ticks;
+use pkg::{Axes, Color, Format, Scale};
+
+const SWATCH: f64 = 22.0;
+const BAR: f64 = 12.0;
+
+fn entries(ax: Axes) -> List<usize> {
+    let out: List<usize> = [];
+    for i in 0..ax.layers.len() {
+        if !ax.layers[i].label.is_empty() { out.push(i); }
+    }
+    out
+}
+
+fn shown(ax: Axes) -> bool { (ax.legend_on ?? true) && !entries(ax).is_empty() }
+
+fn size_of(c: Ctx, ax: Axes) -> (f64, f64) {
+    let fs = c.theme.font_size;
+    let w = 0.0;
+    for i in entries(ax) { w = w.max(c.width(ax.layers[i].label, fs)); }
+    let n = entries(ax).len() as f64;
+    if c.cells() { return (w + 4.0 * 8.0, n * 16.0); }
+    (w + SWATCH + 18.0, n * c.line_h(fs) + 10.0)
+}
+
+/// Width taken right of the plot by an outside legend.
+pub(pkg) fn outside_width(c: Ctx, ax: Axes, colors: List<Color>) -> f64 {
+    let _ = colors;
+    if !shown(ax) || ax.legend != Loc::Outside { return 0.0; }
+    size_of(c, ax).0 + 10.0
+}
+
+pub(pkg) fn legend(c: Ctx, ax: Axes, colors: List<Color>, plot: Rect, tx: Tx, ty: Tx) {
+    if !shown(ax) { return; }
+    let th = c.theme;
+    let (w, h) = size_of(c, ax);
+    let m = if c.cells() { 8.0 } else { 8.0 };
+    let loc = ax.legend ?? Loc::Best;
+    if loc == Loc::Best { loc = best(ax, plot, tx, ty, w, h, m); }
+    let (x, y) = match loc {
+        UpperLeft => (plot.x + m, plot.y + m),
+        LowerLeft => (plot.x + m, plot.bottom() - m - h),
+        LowerRight => (plot.right() - m - w, plot.bottom() - m - h),
+        Right => (plot.right() - m - w, plot.y + (plot.h - h) / 2.0),
+        Left => (plot.x + m, plot.y + (plot.h - h) / 2.0),
+        Top => (plot.x + (plot.w - w) / 2.0, plot.y + m),
+        Bottom => (plot.x + (plot.w - w) / 2.0, plot.bottom() - m - h),
+        Outside => (plot.right() + 10.0, plot.y),
+        _ => (plot.right() - m - w, plot.y + m),
+    };
+    if c.cells() {
+        // Align to the character grid.
+        x = (x / 8.0).round() * 8.0;
+        y = (y / 16.0).round() * 16.0;
+    } else {
+        let bg = if th.panel.a > 0 { th.panel } else { th.background };
+        c.push(Item::Fill { path: Path::rect(x, y, w, h), color: bg.with_alpha(0.9 * bg.opacity()), clip: 0 });
+        c.push(Item::Line { path: Path::rect(x, y, w, h), stroke: Stroke { color: th.frame, width: 1.0, dash: [], round: false }, clip: 0 });
+    }
+    let fs = th.font_size;
+    let lh = c.line_h(fs);
+    let row = 0.0;
+    for i in entries(ax) {
+        let l = ax.layers[i];
+        let col = colors[i].with_alpha(l.style.alpha * colors[i].opacity());
+        let cy = if c.cells() { y + row * 16.0 + 8.0 } else { y + 5.0 + lh * (row + 0.5) };
+        let sx = if c.cells() { x } else { x + 7.0 };
+        let sw = if c.cells() { 16.0 } else { SWATCH };
+        swatch(c, l, col, colors[i], sx, cy, sw);
+        c.text(sx + sw + (if c.cells() { 8.0 } else { 6.0 }), cy, l.label, fs, th.ink_muted, Anchor::Start, VAlign::Center);
+        row += 1.0;
+    }
+}
+
+fn swatch(c: Ctx, l: Layer, fill: Color, line: Color, x: f64, cy: f64, w: f64) {
+    let st = l.style;
+    let lw = if st.width == st.width { st.width } else { c.theme.line_width };
+    match l.mark {
+        Line { .. } | ErrorBars { .. } | Rule { .. } => {
+            let p = Path::new();
+            p.move_to(x, cy);
+            p.line_to(x + w, cy);
+            c.push(Item::Line { path: p, stroke: Stroke { color: fill, width: lw, dash: [], round: true }, clip: 0 });
+            if st.marker != Marker::Nothing {
+                c.push(Item::Markers { xs: [x + w / 2.0], ys: [cy], shape: st.marker, sizes: [c.theme.marker_size], fills: [fill], edge: Color::clear(), edge_width: 0.0, clip: 0 });
+            }
+        }
+        Scatter { .. } => {
+            let size = if st.size == st.size { st.size.min(12.0) } else { c.theme.marker_size };
+            c.push(Item::Markers { xs: [x + w / 2.0], ys: [cy], shape: st.marker, sizes: [size], fills: [fill], edge: Color::clear(), edge_width: 0.0, clip: 0 });
+        }
+        _ => {
+            let h = if c.cells() { 8.0 } else { 9.0 };
+            c.push(Item::Fill { path: Path::rect(x + 2.0, cy - h / 2.0, w - 4.0, h), color: fill, clip: 0 });
+            if let Fill { outline: true, .. } = l.mark {
+                let p = Path::new();
+                p.move_to(x + 2.0, cy - h / 2.0);
+                p.line_to(x + w - 2.0, cy - h / 2.0);
+                c.push(Item::Line { path: p, stroke: Stroke { color: line, width: lw, dash: [], round: false }, clip: 0 });
+            }
+        }
+    }
+}
+
+// The candidate spot with the fewest data points under the legend.
+fn best(ax: Axes, plot: Rect, tx: Tx, ty: Tx, w: f64, h: f64, m: f64) -> Loc {
+    let xs: List<f64> = [];
+    let ys: List<f64> = [];
+    for l in ax.layers {
+        let (x, y) = match l.mark {
+            Line { x, y, .. } => (x, y),
+            Scatter { x, y, .. } => (x, y),
+            ErrorBars { x, y, .. } => (x, y),
+            Fill { x, y2, .. } => (x, y2),
+            Bars { x, h: hs, base, horizontal, .. } => if horizontal { ([], []) } else { (x, tops(hs, base)) },
+            _ => ([], []),
+        };
+        let n = x.len().min(y.len());
+        let stride = (n / 2000).max(1);
+        let i = 0usize;
+        while i < n {
+            xs.push(tx.at(x[i]));
+            ys.push(ty.at(y[i]));
+            i += stride;
+        }
+        // Bars and areas cover what is under them too.
+        if let Bars { .. } = l.mark {
+            for k in 0..n.min(200) {
+                let px = tx.at(x[k]);
+                let top = ty.at(y[k]);
+                let s = 0.0;
+                while s < 1.0 {
+                    xs.push(px);
+                    ys.push(top + (plot.bottom() - top) * s);
+                    s += 0.1;
+                }
+            }
+        }
+    }
+    let spots = [Loc::UpperRight, Loc::UpperLeft, Loc::LowerLeft, Loc::LowerRight, Loc::Right, Loc::Left, Loc::Top, Loc::Bottom];
+    let best = Loc::UpperRight;
+    let fewest = usize::MAX;
+    for s in spots {
+        let (x, y) = match s {
+            UpperLeft => (plot.x + m, plot.y + m),
+            LowerLeft => (plot.x + m, plot.bottom() - m - h),
+            LowerRight => (plot.right() - m - w, plot.bottom() - m - h),
+            Right => (plot.right() - m - w, plot.y + (plot.h - h) / 2.0),
+            Left => (plot.x + m, plot.y + (plot.h - h) / 2.0),
+            Top => (plot.x + (plot.w - w) / 2.0, plot.y + m),
+            Bottom => (plot.x + (plot.w - w) / 2.0, plot.bottom() - m - h),
+            _ => (plot.right() - m - w, plot.y + m),
+        };
+        let k = 0usize;
+        for i in 0..xs.len() {
+            if xs[i] >= x - 4.0 && xs[i] <= x + w + 4.0 && ys[i] >= y - 4.0 && ys[i] <= y + h + 4.0 { k += 1; }
+        }
+        if k < fewest {
+            fewest = k;
+            best = s;
+        }
+    }
+    best
+}
+
+fn tops(h: List<f64>, base: List<f64>) -> List<f64> {
+    List::from_fn(h.len().min(base.len()), |i| h[i] + base[i])
+}
+
+fn source(ax: Axes) -> usize | none {
+    if !ax.colorbar { return none; }
+    let n = ax.layers.len();
+    for k in 0..n {
+        let i = n - 1 - k;
+        if marks::mappable(ax.layers[i]) { return i; }
+    }
+    none
+}
+
+fn bar_ticks(lo: f64, hi: f64, len: f64) -> List<f64> {
+    let m = ((len / 50.0).floor() as usize).max(2).min(8);
+    let (t, _) = ticks::locate(Scale::Linear, lo, hi, m);
+    t
+}
+
+/// Width taken right of the plot by a colorbar.
+pub(pkg) fn colorbar_width(c: Ctx, ax: Axes, colors: List<Color>) -> f64 {
+    let _ = colors;
+    let i = match source(ax) {
+        i: usize => i,
+        none => return 0.0,
+    };
+    let (lo, hi) = marks::color_range(ax.layers[i]);
+    let t = bar_ticks(lo, hi, 200.0);
+    let (labels, _) = format::labels(t, Scale::Linear, Format::Auto);
+    let w = 0.0;
+    for l in labels { w = w.max(c.width(l, c.theme.font_size)); }
+    let cells = c.cells();
+    (if cells { 16.0 + 8.0 } else { 12.0 + BAR + 4.0 + c.theme.tick_length }) + w + (if ax.colorbar_label.is_empty() { 0.0 } else { c.line_h(c.theme.label_size) + 4.0 })
+}
+
+pub(pkg) fn colorbar(c: Ctx, ax: Axes, colors: List<Color>, plot: Rect) {
+    let _ = colors;
+    let i = match source(ax) {
+        i: usize => i,
+        none => return,
+    };
+    let l = ax.layers[i];
+    let th = c.theme;
+    let cells = c.cells();
+    let m = marks::cmap_of(c, l);
+    let (lo, hi) = marks::color_range(l);
+    let x = plot.right() + (if cells { 8.0 } else { 12.0 });
+    let bw = if cells { 16.0 } else { BAR };
+    let (y0, h) = (plot.y, plot.h);
+    let levels = marks::levels_of(l);
+    let filled = match l.mark {
+        Contour { filled, .. } => filled,
+        _ => false,
+    };
+    let (blo, bhi) = if filled && levels.len() >= 2 { (levels[0], levels[levels.len() - 1]) } else { (lo, hi) };
+    if filled && levels.len() >= 2 {
+        let k = levels.len() - 1;
+        for j in 0..k {
+            let a = y0 + h * (1.0 - (levels[j] - blo) / (bhi - blo));
+            let b = y0 + h * (1.0 - (levels[j + 1] - blo) / (bhi - blo));
+            let t = if k > 1 { (j as f64) / ((k - 1) as f64) } else { 0.5 };
+            c.push(Item::Fill { path: Path::rect(x, b, bw, a - b), color: m.at(t), clip: 0 });
+        }
+    } else {
+        let rgba: List<u8> = List::filled(256 * 4, 0u8);
+        for r in 0..256 {
+            let col = m.lut[255 - r];
+            rgba[4 * r] = col.r;
+            rgba[4 * r + 1] = col.g;
+            rgba[4 * r + 2] = col.b;
+            rgba[4 * r + 3] = 255;
+        }
+        c.push(Item::Image { x, y: y0, w: bw, h, cols: 1, rows: 256, rgba, clip: 0 });
+    }
+    if !cells {
+        c.push(Item::Line { path: Path::rect(x, y0, bw, h), stroke: Stroke { color: th.axis, width: th.axis_width * 0.75, dash: [], round: false }, clip: 0 });
+    }
+    let t = if filled && levels.len() >= 2 && levels.len() <= 10 { levels } else { bar_ticks(blo, bhi, h) };
+    let t = t.iter().filter(|v| v >= blo - 1e-9 * (bhi - blo) && v <= bhi + 1e-9 * (bhi - blo)).collect::<List<f64>>();
+    let (labels, _) = format::labels(t, Scale::Linear, Format::Auto);
+    let tl = th.tick_length;
+    let tp = Path::new();
+    let w = 0.0;
+    for j in 0..t.len() {
+        let y = y0 + h * (1.0 - (t[j] - blo) / (bhi - blo));
+        tp.move_to(x + bw, y);
+        tp.line_to(x + bw + tl, y);
+        c.text(x + bw + tl + (if cells { 8.0 } else { 3.0 }), y, labels[j], th.font_size, th.ink_muted, Anchor::Start, VAlign::Center);
+        w = w.max(c.width(labels[j], th.font_size));
+    }
+    if tl > 0.0 { c.push(Item::Line { path: tp, stroke: Stroke { color: th.axis, width: th.axis_width, dash: [], round: false }, clip: 0 }); }
+    if !ax.colorbar_label.is_empty() {
+        let lx = x + bw + tl + 3.0 + w + 4.0;
+        c.text(lx, y0 + h / 2.0, ax.colorbar_label, th.label_size, th.ink, Anchor::Middle, VAlign::Top, rotate: 90.0);
+    }
+}

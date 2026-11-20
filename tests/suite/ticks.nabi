@@ -1,0 +1,101 @@
+// Tick locators: extended Wilkinson against R's labeling::extended
+// (values from a line-by-line port of the R code), log, symlog and date
+// ticks.
+
+use pkg::Scale;
+use pkg::tests::suite::{close, uniform};
+use pkg::ticks::{extended, locate};
+
+fn same(got: List<f64>, want: List<f64>, what: str) {
+    if got.len() != want.len() { panic(f"{what}: {got:?} != {want:?}"); }
+    for i in 0..got.len() {
+        if (got[i] - want[i]).abs() > 1e-9 * want[i].abs().max(1.0) { panic(f"{what}: {got:?} != {want:?}"); }
+    }
+}
+
+#[test]
+fn extended_matches_r() {
+    same(extended(0.0, 100.0, 5), [0.0, 25.0, 50.0, 75.0, 100.0], "0..100");
+    same(extended(1.0, 10.0, 5), [0.0, 2.5, 5.0, 7.5, 10.0], "1..10");
+    same(extended(-0.5, 1.3, 5), [-0.5, 0.0, 0.5, 1.0, 1.5], "-0.5..1.3");
+    same(extended(0.123, 0.987, 6), [0.0, 0.2, 0.4, 0.6, 0.8, 1.0], "0.123..0.987");
+    same(extended(-3.7, 12.2, 7), [-2.5, 0.0, 2.5, 5.0, 7.5, 10.0, 12.5], "-3.7..12.2");
+    same(extended(1e5, 3.2e5, 5), [1e5, 1.5e5, 2e5, 2.5e5, 3e5], "1e5..3.2e5");
+    same(extended(0.0, 1.0, 3), [0.0, 0.5, 1.0], "0..1 m=3");
+    same(extended(-1.0, 1.0, 5), [-1.0, -0.5, 0.0, 0.5, 1.0], "-1..1");
+    same(extended(8.1, 8.25, 5), [8.1, 8.15, 8.2, 8.25], "8.1..8.25");
+    same(extended(0.0, 7.0, 4), [0.0, 2.5, 5.0, 7.5], "0..7");
+    same(extended(2001.0, 2023.0, 6), [2000.0, 2005.0, 2010.0, 2015.0, 2020.0, 2025.0], "years");
+    same(extended(-1e-6, 3e-6, 5), [-1e-6, 0.0, 1e-6, 2e-6, 3e-6], "micro");
+}
+
+#[test]
+fn extended_edge_cases() {
+    // Reversed bounds give the same ticks; a zero range gives m copies.
+    same(extended(100.0, 0.0, 5), [0.0, 25.0, 50.0, 75.0, 100.0], "reversed");
+    same(extended(3.0, 3.0, 3), [3.0, 3.0, 3.0], "flat");
+    assert(extended(f64::NAN, 1.0, 5).is_empty());
+    // only_loose covers the data.
+    let t = extended(0.123, 0.987, 6, only_loose: true);
+    assert(t[0] <= 0.123 && t[t.len() - 1] >= 0.987);
+    // Ticks print exactly: no 0.30000000000000004.
+    for v in extended(0.0, 1.0, 11) { assert(f"{v}".len() <= 3); }
+}
+
+#[test]
+fn extended_property_covers_range() {
+    let lo = uniform(200, 11, -1e6, 1e6);
+    let span = uniform(200, 12, 1e-6, 1e6);
+    for i in 0..200 {
+        let (a, b) = (lo[i], lo[i] + span[i]);
+        let t = extended(a, b, 5);
+        assert(t.len() >= 2 && t.len() <= 12);
+        // Evenly spaced and near the data.
+        let s = t[1] - t[0];
+        for k in 1..t.len() { close(t[k] - t[k - 1], s, s * 1e-9, "even steps"); }
+        assert(t[0] <= a + (b - a) * 0.5 && t[t.len() - 1] >= a + (b - a) * 0.5);
+    }
+}
+
+#[test]
+fn linear_ticks_stay_in_view() {
+    let (major, minor) = locate(Scale::Linear, -0.3, 2.7, 5);
+    same(major, [0.0, 1.0, 2.0], "major");
+    for v in minor { assert(v >= -0.3 && v <= 2.7 && !major.contains(v)); }
+    assert(minor.len() > 0);
+}
+
+#[test]
+fn log_ticks() {
+    let (major, minor) = locate(Scale::Log(10.0), 1.0, 1000.0, 5);
+    same(major, [1.0, 10.0, 100.0, 1000.0], "decades");
+    assert(minor.len() == 24 && minor[0] == 2.0);
+    // Many decades: every third one.
+    let (major, _) = locate(Scale::Log(10.0), 1e-6, 1e6, 6);
+    same(major, [1e-6, 1e-3, 1.0, 1e3, 1e6], "every third");
+    // Under two decades: 1, 2, 5.
+    let (major, _) = locate(Scale::Log(10.0), 3.0, 70.0, 5);
+    same(major, [5.0, 10.0, 20.0, 50.0], "1-2-5");
+    // Base 2.
+    let (major, _) = locate(Scale::Log(2.0), 1.0, 64.0, 8);
+    same(major, [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0], "base 2");
+}
+
+#[test]
+fn symlog_ticks() {
+    let (major, _) = locate(Scale::Symlog { base: 10.0, linthresh: 1.0 }, -1000.0, 1000.0, 9);
+    same(major, [-1000.0, -100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0, 1000.0], "symlog");
+}
+
+#[test]
+fn date_ticks() {
+    let a = pkg::date(2024, 1, 1);
+    let (m, _) = locate(Scale::Date, a, pkg::date(2024, 12, 31), 6);
+    same(m, [a, pkg::date(2024, 3, 1), pkg::date(2024, 5, 1), pkg::date(2024, 7, 1), pkg::date(2024, 9, 1), pkg::date(2024, 11, 1)], "months");
+    let (d, _) = locate(Scale::Date, a, a + 5.0 * 86400.0, 6);
+    assert(d.len() == 6 && d[1] - d[0] == 86400.0);
+    let (h, _) = locate(Scale::Date, a, a + 6.0 * 3600.0, 4);
+    assert(h[1] - h[0] == 7200.0);
+    let (y, _) = locate(Scale::Date, pkg::date(1990, 5, 1), pkg::date(2031, 1, 1), 5);
+    same(y, [pkg::date(2000, 1, 1), pkg::date(2010, 1, 1), pkg::date(2020, 1, 1), pkg::date(2030, 1, 1)], "decades of years");
+}
