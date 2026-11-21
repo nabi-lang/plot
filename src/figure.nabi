@@ -172,9 +172,9 @@ impl Figure {
     /// Writes the figure to `path`: SVG for `.svg`, PNG for `.png`.
     ///
     /// ```nabi
-    /// use std::{env, fs, process};
+    /// use std::{env, fs, random};
     ///
-    /// let path = env::temp_dir() / f"plot_fig_{process::id()}.png";
+    /// let path = env::temp_dir() / f"plot_fig_{random::range(0u64..u64::MAX)}.png";
     /// try plot::line([0, 1], [0, 1]).figure().size(60.0, 40.0).save(f"{path}");
     /// assert((try fs::read(path))[1] == 80);
     /// try fs::remove_file(path);

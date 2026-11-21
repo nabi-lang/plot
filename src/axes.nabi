@@ -1097,9 +1097,9 @@ impl Axes {
     /// Writes an `.svg` or `.png` file, by the extension.
     ///
     /// ```nabi
-    /// use std::{env, fs, process};
+    /// use std::{env, fs, random};
     ///
-    /// let path = env::temp_dir() / f"plot_{process::id()}.svg";
+    /// let path = env::temp_dir() / f"plot_{random::range(0u64..u64::MAX)}.svg";
     /// try plot::line([0, 1], [0, 1]).save(f"{path}");
     /// assert((try fs::read_to_str(path)).starts_with("<svg"));
     /// try fs::remove_file(path);

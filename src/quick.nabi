@@ -155,9 +155,9 @@ pub fn png<P: Plottable>(p: P, scale: f64 = 1.0) throws (PlotError) -> List<u8> 
 /// Writes a figure or an Axes to an `.svg` or `.png` file.
 ///
 /// ```nabi
-/// use std::{env, fs, process};
+/// use std::{env, fs, random};
 ///
-/// let path = env::temp_dir() / f"plot_quick_{process::id()}.svg";
+/// let path = env::temp_dir() / f"plot_quick_{random::range(0u64..u64::MAX)}.svg";
 /// try plot::save(plot::line([0, 1], [0, 1]), f"{path}");
 /// try fs::remove_file(path);
 /// ```
