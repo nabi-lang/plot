@@ -141,7 +141,7 @@ repository root, which writes `assets/*.svg`.
 
 ## Docs
 
-https://packages.nabi-lang.org/packages/plot/latest/docs
+https://docs.nabi-lang.org/packages/plot/latest
 
 ## License
 
