@@ -122,9 +122,13 @@ mid-cell. In the REPL, `fig.show()` draws the figure in the terminal.
 
 ## Output and speed
 
-SVG output is deterministic: equal figures give equal bytes, so SVGs can be
-checked in and diffed. Coordinates have two decimals; text stays text in
-Geist when the page has it. PNG output fills paths by exact area coverage,
+SVG output is deterministic: on one platform, equal figures give equal
+bytes, so SVGs can be checked in and diffed. Coordinates have two decimals.
+Across platforms the bytes can differ: the math library (`log`, `exp`,
+`sin`, `**`) may round the last bit differently, and that bit can move a
+tick, or a coordinate across a 0.01 step, most visibly for data that
+is mostly rounding error, such as a 1e-11 energy drift. Text stays text in Geist when
+the page has it. PNG output fills paths by exact area coverage,
 so every edge is anti-aliased; text uses Geist Regular's outlines (with
 Greek and mathematical symbols from Pretendard), embedded in the package
 under the SIL Open Font License (`assets/fonts`). The encoder writes RGB or

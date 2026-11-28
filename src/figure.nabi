@@ -135,7 +135,8 @@ impl Figure {
     /// ```
     pub fn scene(self) throws (PlotError) -> pkg::scene::Scene { try layout::scene(self, Mode::Vector) }
 
-    /// The SVG document: exact text, deterministic bytes.
+    /// The SVG document: exact text, the same bytes for the same figure
+    /// on one platform.
     ///
     /// ```nabi
     /// assert((try plot::line([0, 1], [0, 1]).figure().svg()).starts_with("<svg"));
