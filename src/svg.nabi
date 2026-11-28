@@ -1,6 +1,7 @@
 //! The SVG backend. Coordinates print with at most two decimals and no
 //! trailing zeros, attributes in a fixed order, so equal figures give
-//! equal bytes. Text stays text (searchable, selectable, styled by the
+//! equal bytes on one platform (another math library can round a last
+//! bit, and so a tick or a coordinate, differently). Text stays text (searchable, selectable, styled by the
 //! page's Geist when present); images embed as PNG data URIs.
 
 use pkg::layer::{Marker, marker_path};

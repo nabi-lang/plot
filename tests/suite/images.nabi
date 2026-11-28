@@ -109,5 +109,12 @@ fn svg_numbers() {
         b.push(' ');
     }
     assert(b.to_str() == "0 0 1 -1.25 3.14 0.01 0 10000000 12.1 ");
+    // Last-bit neighbours print alike away from a 0.005 step.
+    let c = StrBuf::new();
+    for v in [1.0000000000000002, 0.9999999999999999, 12.344999, 12.3451, 1.0 / 0.0] {
+        svg::num(c, v);
+        c.push(' ');
+    }
+    assert(c.to_str() == "1 1 12.34 12.35 0 ", c.to_str());
     assert(svg::escape("a<b & \"c\"") == "a&lt;b &amp; &quot;c&quot;");
 }
